@@ -1,0 +1,1 @@
+:root{--link-color:dodgerblue}a{text-decoration:none;color:var(--link-color)}kbd{background:linear-gradient(-225deg,#d5dbe4,#f8f8f8);border-radius:4px;box-shadow:inset 0 -2px 0 0 #cdcde6,inset 0 0 1px 1px #fff,0 1px 2px 1px #1e235a66;color:#616161;display:inline-block;padding:2px 7px 4px;line-height:1;white-space:nowrap;font-size:90%;font-weight:bold;font-family:monospace}

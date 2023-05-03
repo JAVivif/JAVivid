@@ -8,19 +8,17 @@
   <link rel='icon' href='favicon.ico'>
   <link rel='stylesheet' type='text/css' media='screen' href='style.css'>
   <script src='configs/config.js' defer></script>
-  <script src='main.js' defer></script>
   <script>
-    const theme = localStorage.getItem('theme')
-      || window.matchMedia('(prefers-color-scheme: dark)').matches && 'dark'
-    if (theme) document.documentElement.dataset.theme = theme
+    window.detectSysTheme = () => matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'    const priorTheme = localStorage.getItem('theme') || detectSysTheme()    if (priorTheme) document.documentElement.dataset.theme = priorTheme
   </script>
+  <script src='main.js' defer></script>
   <script src='localization/_countries.js' defer></script>
   <script src='configs/ADs.js' defer></script>
   <script>
     window._CORSViaGM = (inited => ({ inited: Object.assign(new Promise(r => inited = r), { done: inited }) }))()
   </script>
   <script>
-    let AppVer = '6.3.7_2021-07-10';
+    let AppVer = '7.2.0 (2023-05-03)';
     (() => {
       const w = 'white', b = '#00a1d6', s = 'padding:5px 0; border: 1px solid #00a1d6'
       console.log('\n%c Version %c ' + AppVer + ' %c\n ',
@@ -33,8 +31,8 @@
   <i-🍫 id='proBar'></i-🍫>
   <nav id='nav' class='before show'>
     <div id='menuKey' class='before'>
-      <span data-icon='menuKey' class='no-caret'>☰</span>
-      <span data-icon='menuKey' class='no-caret'>❌</span>
+      <span data-icon='menuKey' class='no-caret'>≡</span>
+      <span data-icon='menuKey' class='no-caret'>✕</span>
     </div>
     <aside id='_sidebar' class='hide' tabindex='-1'>
       <ul id='menu' class='no-caret'>
@@ -62,7 +60,7 @@
     </aside>
     <div id='q-form-plus'>
       <form id='q-form'>
-        <input type='search' id='search-box' placeholder-en='Type some JS or :cmd'>
+        <input type='search' id='search-box' placeholder-en='Type :cmd or some JS'>
         <button id='btn-search' data-classListTree>
           <div class='search-icon'></div>
           <div run text-content-en='Run'></div>
@@ -72,7 +70,7 @@
     </div>
     <ul id='tab-group'>
       <li id='shyBtn'>Shy</li>
-      <li data-target-id='imgPanel'>Show</li>
+      <li id='showBtn' data-target-id='imgPanel'>Show</li>
     </ul>
   </nav>
   <div role='nav-after-filling'></div>

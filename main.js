@@ -3,17 +3,21 @@
   const _canSW = location.href.startsWith('http')
   const devMode = /[?&]de(?:[lv]|bug)/.test(location)
   const devInstrs = (new URLSearchParams(location.search).get('del') || '').split(/\s*,\s*/).filter(Boolean)
+  const swFile = `${self._isBundled ? 'main' : 'sw'}.js`
   if (typeof _canSW === 'undefined' || _canSW === true) {
-    const swFile = `${self._isBundled ? 'main' : 'sw'}.js`
     if (typeof window !== 'undefined') {
-      self.clearCaches = () => (
-        caches.keys().then(keys => keys.forEach(key => caches.delete(key))),
-        console.info('🗑️ Caches removed.')
-      )
+      self.clearCaches = async () => {
+        try {
+          const keys = await caches.keys()
+          keys.forEach(key => caches.delete(key))
+          console.info('🗑️ Caches removed.')
+        }
+        catch (e) { console.log('Presumably you are in an incognito window and there is no cache to speak of.') }
+      }
       if (!devInstrs.includes('no')) {
         if (devMode ||
           ['all', 'cache'].some(v => devInstrs.includes(v)) ||
-          Date.now() - localStorage.getItem('lastOpen') > 86400 * 1000 / 2
+          Date.now() - localStorage.getItem('lastOpen') > 86400 * 1000 * 30
         ) {
           clearCaches()
         }
@@ -33,7 +37,7 @@
                 )
               : Promise.resolve()
           ).then(
-            async () => {
+            () => {
               navigator.serviceWorker.register(swFile).then(
                 _reg => console.info(`✅ ServiceWorker registration successful. (swFile: ${swFile})`),
                 _err => console.info('💊 ServiceWorker registration failed:', _err, '\nat:\n', self)
@@ -43,111 +47,115 @@
       }
     }
     else {
-      const cacheName = 'JAVivid'
-      const urlsToCache = ['/', 'index.html', 'style.css', swFile, 'favicon.ico']
-      urlsToCache.push(
-        ...swFile !== 'main.js' ? ['main.js'] : ['config.js'],
-        './localization/zh-CN.js'
-      )
-      const expectedCacheUrls = new Set(urlsToCache)
-      const isUrlToCache = url => {
-        url = new URL(url)
-        const is = url.origin === location.origin && expectedCacheUrls.has(url.pathname)
-        is && console.log(url.pathname, 'gets cached.')
-        return is
-      }
-      self.addEventListener('install', async e => {
-        self.skipWaiting()
-        e.waitUntil(caches.open(cacheName).then(cache => {
-          console.info('Cached locally.')
-          return cache.addAll(urlsToCache)
-        }))
-      })
-      self.addEventListener('activate', _ => {
-        self.clients.claim()
-        console.info('⚒ Service Worker activated.')
-      })
-      const crBug823392 = e => e.request.cache === 'only-if-cached' && e.request.mode !== 'same-origin'
-      self.addEventListener('fetch', e => {
-        if (crBug823392(e)) return
-        const url = e.request.url
-        const urlObj = new URL(url)
-        const isOrigin = urlObj.origin === location.origin
-        const { method } = e.request
-        if (e.request.headers.get('--from') && !e.request.headers.get('--maybe-expired')) {
-          Object.defineProperty(e, 'request', { value: new Request(url, { method }) })
-          return e.respondWith(caches.match(e.request).then(res => (
-            res = new Response(res.body, { statusText: 'Already exist!' }),
-            res
-          )))
+      (function swTasks() {
+        const cacheName = 'JAVivid'
+        const urlsToCache = ['/', 'index.html', 'style.css', 'common.css', swFile, 'favicon.ico']
+        urlsToCache.push(
+          ...swFile !== 'main.js' ? ['main.js'] : ['./configs/config.js'],
+          './localization/_countries.js',
+          './localization/zh-CN.js',
+          'configs/ADs.js'
+        )
+        const expectedCacheUrls = new Set(urlsToCache)
+        const isUrlToCache = url => {
+          url = new URL(url)
+          const is = url.origin === location.origin && expectedCacheUrls.has(url.pathname)
+          is && console.log(url.pathname, 'gets cached.')
+          return is
         }
-        if (!isOrigin) return
-        e.respondWith(async function () {
-          const cache = await caches.open(cacheName)
-          let res
-          if (e.request.headers.get('--permit')) {
+        self.addEventListener('install', async e => {
+          self.skipWaiting()
+          e.waitUntil(caches.open(cacheName).then(cache => {
+            console.info('Cached locally.')
+            return cache.addAll(urlsToCache)
+          }))
+        })
+        self.addEventListener('activate', _ => {
+          clients.claim()
+          console.info('⚒ Service Worker activated.')
+        })
+        const crBug823392 = e => e.request.cache === 'only-if-cached' && e.request.mode !== 'same-origin'
+        self.addEventListener('fetch', e => {
+          if (crBug823392(e)) return
+          const url = e.request.url
+          const urlObj = new URL(url)
+          const isOrigin = urlObj.origin === location.origin
+          const { method } = e.request
+          if (e.request.headers.get('--from') && !e.request.headers.get('--maybe-expired')) {
             Object.defineProperty(e, 'request', { value: new Request(url, { method }) })
+            return e.respondWith(caches.match(e.request).then(res => (
+              res = new Response(res.body, { statusText: 'Already exist!' }),
+              res
+            )))
           }
-          else if (res = await cache.match(e.request) || !url.includes('.css') && await cache.match(urlWithoutSearch(url))) {
-            console.log(`Found response in cache: ${res.url.match(/\/[^/]*$/)}`)
-            return res
-          }
-          try {
-            if (needForward(url)) {
-              res = await forwardFetch(new Request(replaceOrigin(e.request.url, self._currUrl), { method }))
-              res = new Response(res, { headers: { 'Content-Type': res.type } })
+          if (!isOrigin) return
+          e.respondWith(async function () {
+            const cache = await caches.open(cacheName)
+            let res
+            if (e.request.headers.get('--permit')) {
+              Object.defineProperty(e, 'request', { value: new Request(url, { method }) })
             }
-            else {
-              res = await fetch(e.request)
-              res.ok && !/HEAD/i.test(method) && isUrlToCache(url) && cache.put(url, res.clone())
+            else if (res = await cache.match(e.request) || !url.includes('.css') && await cache.match(urlWithoutSearch(url))) {
+              console.log(`Found response in cache: ${res.url.match(/\/[^/]*$/)}`)
+              return res
             }
-            return res
-          }
-          catch (err) { throw err }
-        }())
-      })
-      function urlWithoutSearch(url) {
-        const { origin, pathname } = new URL(url)
-        return origin + pathname
-      }
-      function urlPathname(url) {
-        const { pathname } = new URL(url)
-        return pathname
-      }
-      function replaceOrigin(url, newOrigin = '') {
-        const { origin, pathname, search } = new URL(url)
-        return (newOrigin || origin) + pathname + search
-      }
-      const needForward = url => isQuery(url)
-      const isQuery = url => queriesLinks.test(url)
-      const queriesLinks = ['/complete/search?q=', '/ac/?q=']
-      queriesLinks.test = function (url) { return this.find(urlPart => url.includes(urlPart)) }
-      self.addEventListener('message', e => {
-        if (!e.data) return
-        switch (e.data.type) {
-          case 'set': Object.assign(self, e.data.value); break
-          case 'eval': eval(e.data.value); break
+            try {
+              if (needForward(url)) {
+                res = await forwardFetch(new Request(replaceOrigin(e.request.url, self._currUrl), { method }))
+                res = new Response(res, { headers: { 'Content-Type': res.type } })
+              }
+              else {
+                res = await fetch(e.request)
+                res.ok && !/HEAD/i.test(method) && isUrlToCache(url) && cache.put(url, res.clone())
+              }
+              return res
+            }
+            catch (err) { throw err }
+          }())
+        })
+        function urlWithoutSearch(url) {
+          const { origin, pathname } = new URL(url)
+          return origin + pathname
         }
-      })
-      const forwardingFetch = new BroadcastChannel('forwardingFetch')
-      forwardingFetch.onmessage = e => {
-        if (e.data.type !== 'fetchResponse') return
-        forwardingFetchMap.get(e.data.url).res(e.data.response)
-      }
-      const forwardingFetchMap = new Map
-      async function forwardFetch(request) {
-        if (forwardingFetchMap.has(request.url)) return forwardingFetchMap.get(request.url)
-        let res
-        forwardingFetchMap.set(request.url, Object.assign(
-          new Promise(r => res = response => {
-            forwardingFetchMap.set(request.url, response)
-            r(response)
-          }), { res }
-        ))
-        const req = { url: request.url, method: request.method }
-        forwardingFetch.postMessage(req)
-        return forwardingFetchMap.get(request.url)
-      }
+        function urlPathname(url) {
+          const { pathname } = new URL(url)
+          return pathname
+        }
+        function replaceOrigin(url, newOrigin = '') {
+          const { origin, pathname, search } = new URL(url)
+          return (newOrigin || origin) + pathname + search
+        }
+        const needForward = url => isQuery(url)
+        const isQuery = url => queriesLinks.test(url)
+        const queriesLinks = ['/complete/search?q=', '/ac/?q=']
+        queriesLinks.test = function (url) { return this.find(urlPart => url.includes(urlPart)) }
+        self.addEventListener('message', e => {
+          if (!e.data) return
+          switch (e.data.type) {
+            case 'set': Object.assign(self, e.data.value); break
+            case 'eval': eval(e.data.value); break
+          }
+        })
+        const forwardingFetch = new BroadcastChannel('forwardingFetch')
+        forwardingFetch.onmessage = e => {
+          if (e.data.type !== 'fetchResponse') return
+          forwardingFetchMap.get(e.data.url).res(e.data.response)
+        }
+        const forwardingFetchMap = new Map
+        async function forwardFetch(request) {
+          if (forwardingFetchMap.has(request.url)) return forwardingFetchMap.get(request.url)
+          let res
+          forwardingFetchMap.set(request.url, Object.assign(
+            new Promise(r => res = response => {
+              forwardingFetchMap.set(request.url, response)
+              r(response)
+            }), { res }
+          ))
+          const req = { url: request.url, method: request.method }
+          forwardingFetch.postMessage(req)
+          return forwardingFetchMap.get(request.url)
+        }
+      })()
     }
   }
   typeof window !== 'undefined' && !function () {
@@ -177,10 +185,10 @@
       ;
     (() => {
       genHTMLComp().outerHTML = `<template id='i-🍛'><div id=btn><slot></slot></div>
-    <style>#btn{display:inline-block;position:relative;padding:0.5rem 1rem;border-radius:0.25rem;color:white;background-color:hsl(236,32%,26%);box-shadow:0px 3px 1px -2px rgba(0,0,0,0.2),0px 2px 2px 0px rgba(0,0,0,0.14),0px 1px 5px 0px rgba(0,0,0,0.12);outline:none;cursor:pointer;--trans-duration:0.5s;transition:all var(--trans-duration),background-color calc(0.25 * var(--trans-duration));z-index:1}#btn:hover{background-color:hsl(236,32%,30%)}#btn:active{background-color:hsl(236,32%,22%)}#btn::after,#btn::before{content:'';position:absolute;z-index:-1}.ovhi{overflow:hidden}#btn.shine::after{--top:-60%;top:var(--top);left:0;bottom:var(--top);--width:1.5rem;width:var(--width);background-color:hsla(0,0%,100%,0.2);transform:translateX(calc(-1.4 * var(--width))) rotate(20deg)}#btn.shine:hover::after{transition:transform calc(1.1 * var(--trans-duration));transform:translateX(calc(1.4 * (var(--btn-width) + 1.4 * var(--width)))) rotate(35deg)}#btn.pulse-act{overflow:unset}#btn.pulse-act::before{top:0;bottom:0;left:0;right:0;border-radius:inherit;transform-origin:center;border:0 solid hsl(236,32%,26%);animation:pulse 0.75s}@keyframes pulse{0%{border-width:calc(var(--btn-height) / 2)}100%{border-width:var(--btn-height);transform:scale(1.25);opacity:0}}</style>
+    <style>#btn{display:inline-block;position:relative;padding:0.5rem 1rem;border-radius:0.25rem;color:white;background-color:hsl(236,32%,26%);box-shadow:0px 3px 1px -2px rgba(0,0,0,0.2),0px 2px 2px 0px rgba(0,0,0,0.14),0px 1px 5px 0px rgba(0,0,0,0.12);outline:none;cursor:pointer;--trans-duration:0.5s;transition:all var(--trans-duration),background-color calc(0.25 * var(--trans-duration));z-index:1}#btn:hover{background-color:hsl(236,32%,30%)}#btn:active{background-color:hsl(236,32%,22%)}#btn::after,#btn::before{content:'';position:absolute;z-index:-1}:host(.shadow) #btn{box-shadow:0 0 0.15rem aliceblue}:host(.disable) #btn{background-color:hsla(236,75%,90%,0.5)}.ovhi{overflow:hidden}#btn.shine::after{--top:-60%;top:var(--top);left:0;bottom:var(--top);--width:1.5rem;width:var(--width);background-color:hsla(0,0%,100%,0.2);transform:translateX(calc(-1.4 * var(--width))) rotate(20deg)}#btn.shine:hover::after{transition:transform calc(1.1 * var(--trans-duration));transform:translateX(calc(1.4 * (var(--btn-width) + 1.4 * var(--width)))) rotate(35deg)}#btn.pulse-act{overflow:unset}#btn.pulse-act::before{top:0;bottom:0;left:0;right:0;border-radius:inherit;transform-origin:center;border:0 solid hsl(236,32%,26%);animation:pulse 0.75s}@keyframes pulse{0%{border-width:calc(var(--btn-height) / 2)}100%{border-width:var(--btn-height);transform:scale(1.25);opacity:0}}</style>
     </template>`
       const templateName = 'i-🍛'
-      customElements.define(templateName, class cbtn extends HTMLElement {
+      customElements.define(templateName, class CBtn extends HTMLElement {
         constructor() {
           super()
           this.attachShadow({ mode: 'open', delegatesFocus: true })
@@ -224,7 +232,7 @@
     })();
     (() => {
       genHTMLComp().outerHTML = `<template id='i-ꔹ'><div class='bubbles' translate=no><div></div><div></div><div></div></div>
-    <style>:host{text-align:center}.bubbles>*{display:inline-block;--radius:1.15rem;width:var(--radius);height:var(--radius);margin:calc(var(--radius) / 10);border-radius:50%;background-color:rgba(216,112,147,0.8);animation:fader 1.6s infinite both}.bubbles>*:nth-child(2){animation-delay:0.2s}.bubbles>*:nth-child(3){animation-delay:0.4s}@keyframes fader{50%{background-color:rgba(128,0,128,0.64)}}</style>
+    <style>:host{text-align:center}:host .bubbles>*{--orig-duration:1.6;--duration:var(--orig-duration)}:host([accel]) .bubbles>*{clip-path:polygon(50% 0%,100% 50%,50% 100%,0% 100%,20% 50%,0% 0%);border-radius:unset;--duration:calc(var(--orig-duration) / 2);margin:calc(-1 * var(--radius) / 10)}.bubbles>*{display:inline-block;--radius:1.15rem;width:var(--radius);height:var(--radius);margin:calc(var(--radius) / 10);border-radius:50%;background-color:rgba(216,112,147,0.8);animation:fader calc(var(--duration) * 1s) infinite both}.bubbles>*:nth-child(2){animation-delay:calc(var(--duration) / 8 * 1s)}.bubbles>*:nth-child(3){animation-delay:calc(var(--duration) / 4 * 1s)}@keyframes fader{50%{background-color:rgba(128,0,128,0.64)}}</style>
     </template>`
       window.templateName = 'i-ꔹ'
       customElements.define(templateName, window.cfBubbles = class extends HTMLElement {
@@ -233,6 +241,7 @@
           this.attachShadow({ mode: 'open', delegatesFocus: true })
             .appendChild(document.getElementById(templateName).content.cloneNode(true))
           if (id !== undefined) this.id = id
+          this.shadowRoot.append(...this.childNodes)
         }
       })
     })();
@@ -270,7 +279,7 @@
         evalBlock.before(eBC)
         evalBlock.remove()
       <\/script>
-      <div choose cond='local'><p><b>Reason:</b> Cross-Origin Request Blocked. </p><p> You're using the local <a href='https://en.wikipedia.org/wiki/File_URI_scheme' target='_blank'> file URI scheme</a> (<code eval> decodeURI(\`\${location.protocol}//\${location.pathname.replace(htmlCompDirPath, 'index')}\`) </code>). </p><br><p><b>Solution 1:</b> Google search for <b>“Web Server for <a href='https://www.google.com/search?q=kWS+-+Android+Web+Server' target='_blank'>Android</a>/iOS</b>/etc<b>”</b>. </p><p><b>Solution 2:</b> Use the <a href='../release engineering/bundled/index.html' target='_top'><b>bundled local version</b></a> instead. (If file not found, run <code>node <a href='../release engineering/bundle.js' target='_blank'>bundle.js</a></code> to generate it.) </p></div><div choose cond='trivial'><p>Looks like something went wrong! Try refreshing.</p></div></template></slot><slot name='idb-problem'><p><span err-font>Error:</span> Unable to use <b>indexedDB</b>. </p><p>Perhaps you're using Firefox and either in a Private Window (desktop) or version below 90 (mobile). </p></slot><div name='undefErr'><span err-font>Error:</span><slot></slot></div></template>`
+      <div choose cond='local'><p><b>Reason:</b> Cross-Origin Request Blocked. </p><p> You're using the local <a href='https://en.wikipedia.org/wiki/File_URI_scheme' target='_blank'> file URI scheme</a> (<code eval> decodeURI(\`\${location.protocol}//\${location.pathname.replace(htmlCompDirPath, 'index')}\`) </code>). </p><br><p><b>Solution 1:</b> Google search for <b>“Web Server for <a href='https://www.google.com/search?q=kWS+-+Android+Web+Server' target='_blank'>Android</a>/iOS</b>/etc<b>”</b>. </p><p><b>Solution 2:</b> Use the <a href='../Releng/bundled/index.html' target='_top'><b>bundled local version</b></a> instead. (If file not found, run <code>node <a href='../Releng/bundle.js' target='_blank'>bundle.js</a></code> to generate it.) </p></div><div choose cond='trivial'><p>Looks like something went wrong! Try refreshing.</p></div></template></slot><slot name='idb-problem'><p><span err-font>Error:</span> Unable to use <b>indexedDB</b>. </p><p>Perhaps you're using Firefox and either in a Private Window (desktop) or version below 90 (mobile). </p></slot><div name='undefErr'><span err-font>Error:</span><slot></slot></div></template>`
       customElements.define('i-🚨', window.errSec = class extends HTMLElement {
         constructor(slotVal) {
           super()
@@ -307,7 +316,7 @@
     })();
     (() => {
       genHTMLComp().outerHTML = `<template id=i-💭><div id=pd-box><div><div></div><ul role=listbox></ul></div></div><slot name=li><li class=sbct><div class=LaCQgf><div class=zRAHie role=option><slot name=item></slot></div></div></li></slot>
-    <style>:host{display:block;position:absolute;cursor:default;text-align:left;--t-i:var(--search-box-padding-h);pointer-events:none}:host.hide{display:none}:host>:not(:first-child){display:none}slot{color:var(--color)}li:hover{background-color:var(--menu-li-bg)}#pd-box{--pd-box-border-radius:var(--box-border-radius);--padding:calc(2 * var(--pd-box-border-radius));overflow:hidden;padding:var(--padding);padding-top:0;width:100%;margin-left:calc(-1 * var(--padding))}#pd-box,#pd-box>:first-child{border-radius:var(--pd-box-border-radius);border-top-left-radius:0;border-top-right-radius:0}#pd-box>:first-child{background-color:var(--search-box-bg);--box-shadow-color:var(--box-shadow-color-spec,rgba(64,60,67,.24));--box-shadow-color-tint:rgba(64,60,67,.12);box-shadow:var(--box-shadow,4px 8px 8px -3px var(--box-shadow-color),-4px 0 8px -3px var(--box-shadow-color),8px 0.5rem 8px -7px var(--box-shadow-color-tint),-8px 0.5rem 8px -7px var(--box-shadow-color-tint));display:flex;flex-direction:column;list-style-type:none}#pd-box>:first-child>:first-child{border-top:1px solid #c8c8c8;margin:0 var(--search-box-padding-v)}ul,ul>li{margin:0;padding:0}ul{pointer-events:auto}ul.flex{display:flex;flex-direction:column;max-height:calc(100vh - var(--nav-after-height));overflow:auto;overscroll-behavior:contain}ul>li:last-child{padding-bottom:var(--search-box-padding-v)}[slot=item]{display:flex;flex-direction:column}[words-excerpt-container]{display:flex;align-items:center;margin-left:calc(2 * var(--t-i));margin-top:calc(0.72 * var(--t-i));gap:0.75rem}[words-excerpt-title]{color:gray;font-size:smaller}:host([data-theme=dark]) [words-excerpt-title]{color:lightgray}:host-context([data-theme=dark]) [words-excerpt-title]{color:lightgray}[words-excerpt-title]:empty{display:none}[words-excerpt-img]{max-height:6ex}[words-excerpt-desc]{font-size:smaller}.sbct{display:flex;padding:0}.LaCQgf{display:flex;margin:0 var(--t-i)}.zRAHie{display:flex;flex-direction:column;padding:6px 0}</style>
+    <style>:host{display:block;position:absolute;cursor:default;text-align:left;--t-i:var(--search-box-padding-h);pointer-events:none}:host.hide{display:none}:host>:not(:first-child){display:none}slot{color:var(--color)}li:hover,li.hovering{background-color:var(--menu-li-bg)}#pd-box{--pd-box-border-radius:var(--box-border-radius);--padding:calc(2 * var(--pd-box-border-radius));overflow:hidden;padding:var(--padding);padding-top:0;width:100%;margin-left:calc(-1 * var(--padding))}#pd-box,#pd-box>:first-child{border-radius:var(--pd-box-border-radius);border-top-left-radius:0;border-top-right-radius:0}#pd-box>:first-child{background-color:var(--search-box-bg);--box-shadow-color:var(--box-shadow-color-spec,rgba(64,60,67,.24));--box-shadow-color-tint:rgba(64,60,67,.12);box-shadow:var(--box-shadow,4px 8px 8px -3px var(--box-shadow-color),-4px 0 8px -3px var(--box-shadow-color),8px 0.5rem 8px -7px var(--box-shadow-color-tint),-8px 0.5rem 8px -7px var(--box-shadow-color-tint));display:flex;flex-direction:column;list-style-type:none}#pd-box>:first-child>:first-child{border-top:1px solid #c8c8c8;margin:0 var(--search-box-padding-v)}ul,ul>li{margin:0;padding:0}ul{pointer-events:auto}ul.flex{display:flex;flex-direction:column;max-height:calc(100vh - var(--nav-after-height));overflow:auto;overscroll-behavior:contain}ul>li:last-child{padding-bottom:var(--search-box-padding-v)}[slot=item]{display:flex;flex-direction:column}[words-excerpt-container]{display:flex;align-items:center;margin-left:calc(2 * var(--t-i));margin-top:calc(0.72 * var(--t-i));gap:0.75rem}[words-excerpt-title]{color:gray;font-size:smaller}:host([data-theme=dark]) [words-excerpt-title]{color:lightgray}:host-context([data-theme=dark]) [words-excerpt-title]{color:lightgray}[words-excerpt-title]:empty{display:none}[words-excerpt-img]{max-height:6ex}[words-excerpt-desc]{font-size:smaller}.sbct{display:flex;padding:0}.LaCQgf{display:flex;margin:0 var(--t-i)}.zRAHie{display:flex;flex-direction:column;padding:6px 0}</style>
     </template>`
       const templateName = 'i-💭'
       customElements.define(templateName, window.googlePredictions = class googlePredictions extends HTMLElement {
@@ -317,9 +326,9 @@
             .appendChild(document.getElementById(templateName).content.cloneNode(true));
           [
             ['slotLi', 'slot[name=li]'],
-            ['ul', 'ul']
+            ['ul']
           ]
-            .forEach(([n, s]) =>
+            .forEach(([n, s = n]) =>
               this[n] = this.shadowRoot.querySelector(s)
             )
           this.setAttribute('translate', 'no')
@@ -349,7 +358,7 @@
           }
           this.clear = function () { this.replaceItems(); this.remove() }
           this.hide = function () { if (!this.isConnected) return; this.classList.add('hide'); this._responseToElems() }
-          this.show = function () { if (!this.isConnected || !this.ul.childElementCount) return; this.classList.remove('hide'); this._responseToElems(true) }
+          this.show = function () { if (!(this.isConnected && this.ul.childElementCount)) return; this.classList.remove('hide'); this._responseToElems(true) }
           this._responseToElems = function (add) {
             if (Array.isArray(this.responseToElems)) {
               this.responseToElems.forEach(elem => elem instanceof HTMLElement &&
@@ -357,18 +366,58 @@
               )
             }
           }
-          this.clicked = {}
-          this.addEventListener('click', e => {
-            this.clicked = {}
-            const li = e.composedPath()[0].closest('li')
+          this.selected = {}
+          this.addEventListener('select', ({ detail: { explicitOriginalType, explicitOriginalTarget } }) => {
+            const li = explicitOriginalTarget.closest('li')
             const item = li && li.querySelector('[keywords]')
             if (!item) return
-            const words = item.innerText
-            this.clicked = { li, item, words }
+            const text = item.innerText
+            this.selected = { item, text }
+          })
+          this.addEventListener('click', this.dispatchSelect)
+          this.addEventListener('keydown', e => {
+            const { key } = e
+            switch (key) {
+              case 'ArrowDown': this.hoverOnItem(1); break
+              case 'ArrowUp': this.hoverOnItem(0); break
+              case 'Enter': if (this.ul.hovering) {
+                this.dispatchSelect({ explicitOriginalType: 'keydown', explicitOriginalTarget: this.ul.hovering })
+                delete this.ul.hovering
+              }; break
+              default: delete this.ul.hovering
+            }
           })
         }
         get isShow() {
           return this.isConnected && !this.classList.contains('hide')
+        }
+        dispatchSelect(e) {
+          this.dispatchEvent(new CustomEvent('select', {
+            detail: {
+              explicitOriginalType: e.type,
+              explicitOriginalTarget: e.explicitOriginalTarget || e.composedPath()[0]
+            }
+          }))
+        }
+        hoverOnItem(downward = true) {
+          if (this.ul.hovering) {
+            clearTimeout(this.ul.hovering.focusWithDelay)
+            this.ul.hovering.focusWithDelay = setTimeout(() => this.ul.hovering.scrollIntoView({ block: 'nearest' }), 50)
+          }
+          this.ul.list = this.ul.querySelectorAll('li')
+          this.ul.hovering = this.ul.querySelector('.hovering')
+          if (!this.ul.hovering) {
+            this.ul.hovering = this.ul.querySelector(`slot:nth-child(${downward ? 1 : this.ul.list.length})>li`)
+          }
+          else {
+            let pos = Array.prototype.indexOf.call(this.ul.list, this.ul.hovering) + 1
+            if (pos === (downward ? this.ul.list.length : 1)) return
+            pos += downward ? 1 : -1
+            this.ul.hovering.classList.remove('hovering')
+            this.ul.hovering = this.ul.querySelector(`slot:nth-child(${pos})>li`)
+          }
+          if (!this.ul.hovering) return
+          this.ul.hovering.classList.add('hovering')
         }
       })
     })();
@@ -377,7 +426,7 @@
     <style>:host{--offset:calc(3.14 * var(--width) * 1px);--duration:1.75s;display:grid;place-content:center;position:absolute;height:100%}.spinner{animation:rotator var(--duration) linear infinite}@keyframes rotator{100%{transform:rotate(1.5turn)}}.path{stroke-dasharray:var(--offset);transform-origin:center;animation:dash var(--duration) infinite,colors calc(var(--duration)*4) infinite}@keyframes colors{0%{stroke:dodgerblue}50%{stroke:tomato}100%{stroke:dodgerblue}}@keyframes dash{0%{stroke-dashoffset:calc(var(--offset) / 4)}50%{stroke-dashoffset:calc(var(--offset) / 1.05);transform:rotate(1.15turn)}100%{stroke-dashoffset:calc(var(--offset) / 4);transform:rotate(1.5turn)}}</style>
     </template>`
       const templateName = 'i-💿'
-      customElements.define(templateName, window.spinr = class extends HTMLElement {
+      customElements.define(templateName, window.Spi = class extends HTMLElement {
         constructor(r = 35) {
           super()
           const spin = { strokeWidth: r / 3.5 }
@@ -396,19 +445,27 @@
     })();
     (() => {
       genHTMLComp().outerHTML = `<template id='i-🍞'>
-    <style>:host{--offsetY:0;display:grid;place-items:center;position:fixed;width:100%;bottom:6vh;z-index:3;animation:fade-in 0.3s;pointer-events:none;transition-duration:0.37s}@keyframes fade-in{from{transform:translateY(50%);opacity:0}to{transform:translateY(0);opacity:1}}[data-msg]{--background-color:rgba(72,72,72,0.95);background-color:var(--background-color);color:azure;--padding-left:0.6rem;padding:var(--padding-left) calc(1.5 * var(--padding-left));border-radius:var(--padding-left);max-width:min(80vw,42rem);pointer-events:all;position:relative;margin:0.3rem 0}code,.code{font-family:'Fira Code','Roboto Mono',Consolas,'DejaVu Sans Mono',Menlo,Monaco,'Microsoft YaHei UI',monospace;color:rgb(215,186,125);background-color:rgba(40,43,51,0.98);letter-spacing:-0.2px;font-size:1.05em}code{background-color:unset}:host(.fade-out){transform:translateY(calc(var(--offsetY)*1px - 33%)) !important;opacity:0;transition:all 0.5s}:host(.fade-out-reverse){transform:translateY(calc(var(--offsetY)*1px + 60%)) !important}div[msg]{max-height:20vh;overflow-y:auto}.xBtnWrapper{--side:var(--padding-left);--neg-side:calc(-1.5 * var(--side));position:absolute;top:var(--neg-side);left:0;--font-size:calc(2.5 * var(--side));width:var(--font-size);height:var(--font-size);background-image:linear-gradient(to top,transparent,var(--background-color) 40%);border-radius:50% 50% 40% 40%;cursor:pointer;overflow:hidden}.xBtn{font-size:var(--font-size)}.xBtn::before{content:'⮿';color:rgb(240,58,23);position:absolute;transform:translate(calc(0.04 * var(--font-size)),calc(-0.2 * var(--font-size)));text-shadow:1px 1px darkred}.flash{animation:flash 125ms linear 4 alternate}@keyframes flash{to{background:white}}</style>
+    <style>@import 'common.css';:host{--offsetY:0;display:grid;place-items:center;position:fixed;width:100%;bottom:6vh;z-index:3;animation:fade-in 0.3s;pointer-events:none;transition-duration:0.37s}@keyframes fade-in{from{transform:translateY(50%);opacity:0}to{transform:translateY(0);opacity:1}}[data-msg]{--background-color:rgba(72,72,72,0.95);background-color:var(--background-color);color:azure;--padding-left:0.6rem;padding:var(--padding-left) calc(1.6 * var(--padding-left));border-radius:calc(2 * var(--padding-left));max-width:min(80vw,42rem);pointer-events:all;position:relative;margin:0.3rem 0}code,.code{font-family:'Fira Code','Roboto Mono',Consolas,'DejaVu Sans Mono',Menlo,Monaco,'Microsoft YaHei UI',monospace;color:rgb(215,186,125);background-color:rgba(40,43,51,0.98);letter-spacing:-0.2px;font-size:1.05em}code{background-color:unset}:host(.fade-out){transform:translateY(calc(var(--offsetY)*1px - 33%)) !important;opacity:0;transition:all 0.5s}:host(.fade-out-reverse){transform:translateY(calc(var(--offsetY)*1px + 60%)) !important}div[msg]{max-height:20vh;overflow-y:auto}.xBtnWrapper{--side:var(--padding-left);--neg-side:calc(-1.5 * var(--side));position:absolute;top:var(--neg-side);left:0;--font-size:calc(2.3 * var(--side));width:var(--font-size);height:var(--font-size);background-image:linear-gradient(to top,transparent,var(--background-color) 40%);border-radius:50% 50% 40% 40%;cursor:pointer;overflow:hidden}.xBtn{font-size:var(--font-size)}.xBtn::before{content:'✕';color:rgb(240,58,23);position:absolute;transform:translate(calc(0.12 * var(--font-size)),calc(-0.3 * var(--font-size)));text-shadow:1px 1px darkred}.flash{animation:flash 125ms linear 4 alternate}@keyframes flash{to{background:white}}</style>
     </template>`
       const templateName = 'i-🍞'
-      customElements.define(templateName, window.tosta = class tosta extends HTMLElement {
-        constructor(msg, duration = String(msg).split(/\W/).length / 2 + 2, { className = '', showXBtn, id } = {}) {
+      customElements.define(templateName, window.Tosta = class Tosta extends HTMLElement {
+        constructor(msg, duration, { className = '', showXBtn, id, dedup = true } = {}) {
           super()
+          if (dedup && Tosta.msgMap.has(msg)) {
+            const _this = Tosta.msgMap.get(msg)
+            Tosta.showElem(_this)
+            return _this
+          }
           this.attachShadow({ mode: 'open', delegatesFocus: true })
             .appendChild(document.getElementById(templateName).content.cloneNode(true))
+          if (typeof duration === 'string') [duration, id] = [, duration]
+          else if (duration && typeof duration === 'object') ({ className, showXBtn, id, dedup } = duration)
           if (id) {
-            const prev = document.getElementById(id)
+            const prev = document.querySelector(`${templateName}#${id}`)
             prev && prev.remove()
             this.id = id
           }
+          Tosta.msgMap.set(this._msg = msg, this)
           const div = document.createElement('div')
           div.setAttribute('data-msg', '')
           div.innerHTML = `<div msg>${msg}</div>`
@@ -419,7 +476,7 @@
             const xBtn = document.createElement('div')
             xBtnWrapper.className = 'xBtnWrapper'
             xBtn.className = 'xBtn'
-            xBtn.addEventListener('click', () => tosta.removeElem(this, { reverse: true }))
+            xBtn.addEventListener('click', () => Tosta.removeElem(this, { reverse: true }))
             xBtnWrapper.append(xBtn)
             div.prepend(xBtnWrapper)
             div.style['border-top-left-radius'] = 0
@@ -428,12 +485,25 @@
           this.shadowRoot.append(div)
           if (!Array.isArray(window[`__${templateName}`])) window[`__${templateName}`] = []
           window[`__${templateName}`].push(this)
-          tosta.showElem(duration)
+          if (!(typeof duration === 'number' && duration > 0)) duration = String(msg).split(/\W/).length / 2 + 2
+          this._duration = duration
+          Tosta.showElem(duration)
         }
+        scat() {
+          Tosta.removeElem(this, { reverse: true })
+        }
+        static msgMap = new Map
         static showElem(duration) {
-          const elem = window[`__${templateName}`].shift()
-          tosta.getContainer().append(elem)
-          tosta.setTimeout(elem, duration)
+          let elem
+          if (typeof duration === 'object') {
+            elem = duration
+            duration = elem._duration
+            elem.removeAttribute('class')
+          }
+          else elem = window[`__${templateName}`].shift()
+          Tosta.getContainer().append(elem)
+          clearTimeout(elem.timeoutID)
+          Tosta.setTimeout(elem, duration)
           slidePreviousSiblings(elem, 'up')
         }
         static removeElem(elem, { reverse } = {}) {
@@ -441,12 +511,12 @@
           elem.addEventListener('transitionend', () => {
             slidePreviousSiblings(elem, 'down')
             elem.remove()
-            delete window[elem.id]
+            Tosta.msgMap.delete(elem._msg)
           })
         }
         static setTimeout(elem, delay) {
           let isFirstTime = true
-          elem.setTimeout = shortDelay => elem.timeoutID = setTimeout(() => tosta.removeElem(elem), isNaN(shortDelay) ? delay / (isFirstTime ? 1 : 2) * 1000 : shortDelay)
+          elem.setTimeout = shortDelay => elem.timeoutID = setTimeout(() => Tosta.removeElem(elem), isNaN(shortDelay) ? delay / (isFirstTime ? 1 : 2) * 1000 : shortDelay)
           elem.setTimeout()
           isFirstTime = false
           elem.addEventListener('dblclick', elem.setTimeout.bind(undefined, 0), { once: true })
@@ -456,10 +526,10 @@
           })
         }
         static getContainer() {
-          if (tosta.containerCreated) return tosta.container
-          tosta.containerCreated = true
-          tosta.container = Object.assign(document.createElement('div'), { id: 'toast-container' })
-          return document.body.appendChild(tosta.container)
+          if (Tosta.containerCreated) return Tosta.container
+          Tosta.containerCreated = true
+          Tosta.container = Object.assign(document.createElement('div'), { id: 'toast-container' })
+          return document.body.appendChild(Tosta.container)
         }
       })
       Object.defineProperty(HTMLElement.prototype, 'previousElementSiblings', {
@@ -474,7 +544,7 @@
         const { height } = elem.getBoundingClientRect()
         let previousSiblings
         switch (dir) {
-          case 'up': [previousSiblings, dir] = [tosta.container.querySelectorAll(':not(:last-child)'), -1]; break
+          case 'up': [previousSiblings, dir] = [Tosta.container.querySelectorAll(':not(:last-child)'), -1]; break
           case 'down': [previousSiblings, dir] = [elem.previousElementSiblings, 1]; break
         }
         if (!previousSiblings) return
@@ -582,10 +652,10 @@
     })();
     (() => {
       genHTMLComp().outerHTML = `<template id='i-🎿'>
-    <style>:host{--trans-duration:0.3s;--trans-delay:0.1s;--slide-dir:-1;--slide-in:calc(var(--slide-dir) * 100%);--slide-back:calc(-1 * var(--slide-in));--padding-side:0.5rem;--margin-side-base:0.6rem;--margin-side:var(--margin-side-base);--max-width:var(--global-max-width,35rem);--dividing-line-color:#70809090;--dividing-line:1px solid var(--dividing-line-color);--items-dividing-line:var(--dividing-line);--group-dividing-line:var(--dividing-line);--list-color:#08f3;--list-border-radius:var(--padding-side);--list-padding:0.3rem;--list-box-shadow-blur-radius:calc(2.15 * var(--list-padding));--list-box-shadow-spread-radius:calc(-1 * var(--list-padding));--sym-x:'✖';--sym-left:'❮';--sym-right:'❯';--sym-back:var(--sym-left);--sym-down-thin:'⌵';--sym-gap:0.55rem;--sym-margin:0 0.8rem 0 0.5rem;--dusky-color:hsla(0,0%,0%,0.05);--dusky-color-dark:hsla(0,0%,100%,0.05);--header-background-color:hsla(0,0%,0%,0.01);--header-background-color-dark:hsla(0,0%,100%,0.025);--header-box-shadow-color:hsla(0,0%,0%,0.15);--header-box-shadow-color-dark:hsla(0,0%,100%,0.15);--header-font-size:1.5rem;--dt-font-size:1.15rem;--bounce-in:bounce-in 0.15s}:host-context([data-theme=dark]){--dusky-color:var(--dusky-color-dark);--header-background-color:var(--header-background-color-dark);--header-box-shadow-color:var(--header-box-shadow-color-dark)}:host([data-theme=dark]){--dusky-color:var(--dusky-color-dark);--header-background-color:var(--header-background-color-dark);--header-box-shadow-color:var(--header-box-shadow-color-dark)}:host{display:flex;justify-content:center;position:relative;padding:var(--padding-side) 0;height:calc(100% - 2 * var(--padding-side));overflow:hidden;pointer-events:auto;text-align:start;user-select:text}@media (orientation:landscape){:host>dl{max-width:var(--max-width)}}:host,*{transition:all var(--trans-duration)}dl{--dl-padding-side:1rem;position:relative;flex-grow:1;display:flex;flex-direction:column;align-items:start;overscroll-behavior:none;padding:0 var(--dl-padding-side);background-color:var(--color-bg);margin:0}:host>dl{position:sticky;top:0;bottom:0}dd>dl>*{color:var(--color)}dt[list-flavor=panel]+dd>dl{--border-width:2px;--border-style:solid var(--list-color);--border:var(--border-width) var(--border-style);border:var(--border);border-top:none;border-bottom:0 var(--border-style);border-radius:var(--list-border-radius);margin-block-start:unset;margin-block-end:unset}dt[list-flavor=panel]+dd.expand>dl{border-bottom:var(--border);padding-top:var(--list-padding)}header{font-size:var(--header-font-size);padding:var(--padding-side) 0;margin:0 calc(-2 * var(--padding-side));background-color:var(--header-background-color);box-shadow:0 2px 4px 1px var(--header-box-shadow-color);pointer-events:none}header::before,header::after{cursor:pointer;pointer-events:auto}header::before{display:inline-block;content:var(--sym-back);padding:0 var(--sym-gap);margin-right:calc(1.2 * var(--sym-gap))}:host>dl>header{background-color:unset;box-shadow:none;margin-left:unset}:host>dl>header::before{content:none}:host>dl>header::after{content:var(--sym-x);float:inline-end;margin-left:var(--sym-gap)}dl>[list-container]{width:100%;height:calc(100% - 2 * var(--padding-side) - var(--margin-side));padding-top:calc(var(--padding-side) + var(--margin-side));overflow-y:auto;overflow-x:hidden;overscroll-behavior:none}dl>[list-container][list-style=compact]{height:unset;padding-top:unset;--items-dividing-line:none}dt[list-flavor=flex]+dd>dl>[list-container]{display:flex;justify-content:space-around;height:unset;padding-top:unset}dt[list-flavor=grid]+dd>dl>[list-container]{width:unset;padding:var(--padding-side);padding-top:calc(2 * var(--padding-side))}dt[list-flavor=panel]+dd>dl>[list-container]{padding-top:unset;overflow:hidden}dt[list-flavor=choose]+dd>dl>[list-container]{--items-dividing-line:none;--checkmark-width:1.75rem;padding-left:var(--checkmark-width)}dt{display:flex;justify-content:space-between;align-items:center;cursor:pointer;font-size:var(--dt-font-size)}dt:empty{display:none}dt:not(:first-child){margin-top:var(--margin-side)}[list-container].no-dividing-line>dd{margin-top:calc(var(--margin-side) / 2)}[list-container]>[group]>dt{padding-top:unset;border-top:unset}dt[end],dt[as-placeholder]{cursor:default}dt[list-flavor=panel]{--panel-text-padding:calc(2 * var(--list-padding));position:relative;padding-top:var(--list-padding);border-top:unset;text-indent:var(--panel-text-padding);border-radius:var(--list-border-radius) var(--list-border-radius) 0 0;background-color:var(--list-color)}dt[list-flavor=panel]:not(:first-child)::before{content:'';width:100%;height:1px;background-color:var(--dividing-line-color);position:absolute;top:calc(-1 * var(--margin-side))}dt[list-flavor=panel]::after{content:var(--sym-left);transform:rotate(-90deg);transform-origin:75% center;transition-duration:inherit;position:absolute;right:calc(1.2 * var(--panel-text-padding));line-height:0}dt[list-flavor=panel].dd-expanded::after{transform:rotate(90deg)}dt[list-flavor=panel]+dd>dl>[list-container]>dt[list-flavor=panel]{margin-top:var(--margin-side)}dt[list-flavor=flex]{cursor:default}dt[list-flavor=flex]+dd>dl>[list-container]>dt{margin:0 var(--margin-side);width:unset;cursor:pointer;padding-top:unset;border-top:unset}dt[list-flavor=choose]+dd>dl>[list-container]>dt{justify-content:unset;cursor:pointer}dt[list-flavor=choose]+dd>dl>[list-container]>dt:not(:first-child){margin:calc(var(--margin-side) * 1.5) 0}dt[list-flavor=choose]+dd>dl>[list-container]>dt>.default-checkmark{position:relative;left:calc(-1 * var(--checkmark-width));width:var(--checkmark-width);margin-right:calc(-1 * var(--checkmark-width));line-height:1rem}dt[list-flavor=sub-flat]{--size:0.85rem;cursor:default;border-top:1px rgba(128,128,128,0.75) solid;font-size:var(--size);color:var(--color-gray);opacity:0.85;padding-top:calc(var(--size) / 2)}dt[list-flavor=sub-flat]:first-of-type{border-top:unset;padding-top:unset}dt[list-flavor=sub-flat]+dd{border-bottom:none}dt[list-flavor=sub-flat]+dd>dl,dt[list-flavor=sub-flat]+dd>dl>[list-container]{padding:unset}dt *{font-size:inherit}[dt-icon-wrapper]{display:inline-grid;place-items:center;width:1.5rem;margin:var(--sym-margin)}dt[list-flavor=panel]>*{pointer-events:none}dd{margin:var(--margin-side) 0;color:var(--color-gray);font-size:0.875rem;line-height:1.25rem;letter-spacing:0.2px;overflow:clip}dd:not(:last-child){border-bottom:var(--items-dividing-line)}dd.no-dividing-line,[list-container].no-dividing-line>dd:not(.dividing-line){border-bottom:unset;height:1px}dd+.dividing-line{border-top:var(--items-dividing-line);margin-bottom:calc(2 * var(--padding-side));pointer-events:none}[list-container].no-dividing-line>dd+.dividing-line{margin-bottom:var(--padding-side)}dt[end]+dd:not(:last-child,:empty){padding-bottom:var(--padding-side)}@supports not (overflow:clip){dd{--margin-side:calc(var(--margin-side-base) / 2);overflow:hidden;padding-bottom:var(--margin-side)}dt:not(:first-child){padding-top:var(--margin-side-base)}dd+dt{padding-top:unset !important}}dt:empty+dd{margin-top:calc(-1 * var(--margin-side));margin-bottom:calc(-0.5 * var(--margin-side))}dt[list-flavor=panel]+dd{background-color:var(--list-color);border-radius:0 0 var(--list-border-radius) var(--list-border-radius);margin-top:unset;margin-bottom:calc(var(--list-padding) + var(--margin-side));padding-top:unset;padding-bottom:var(--list-padding);border-bottom:var(--items-dividing-line)}dt[list-flavor=panel]+dd.expand{padding-top:calc(var(--margin-side) / 2);padding-bottom:unset}dd>*{--margin-refine:1rem}dd>:not(a){display:block}dd>:last-child{padding-bottom:calc(-1 * var(--margin-refine))}dd>*>[data-brief-desc],dd>*>[data-full-desc]{display:inline-block}dd>*>[data-brief-desc]{cursor:pointer}dd>*>[data-full-desc]{height:0;overflow:hidden;opacity:0}dd>*>[data-full-desc].expand{height:unset;margin:calc(var(--margin-refine) / 2) 0 var(--margin-refine);opacity:unset}[list-container]>[group]{padding-top:var(--margin-side);border-top:var(--group-dividing-line)}.absolute{position:absolute;top:0;bottom:0;left:0;right:0;z-index:1}.collapse{height:0;visibility:hidden}.bounce-in{animation:var(--bounce-in)}@keyframes bounce-in{0%{transform:scale(var(--bounce-in-scale-from,0));opacity:var(--bounce-in-opacity-from,0)}90%{transform:scale(var(--bounce-in-scale-mid,1.15));opacity:var(--bounce-in-opacity-mid,1)}100%{transform:scale(1)}}.bounce-in-half{animation:var(--bounce-in-half)}@keyframes bounce-in-half{0%{transform:scale(var(--bounce-in-half-scale-from,0));opacity:var(--bounce-in-half-opacity-from,0)}50%{transform:scale(var(--bounce-in-half-scale-mid,1.15));opacity:var(--bounce-in-half-opacity-mid,1)}100%{transform:scale(1)}}.card-list{--per-row:5;--card-width:calc(var(--max-width) / var(--per-row));--card-gap:calc(var(--padding-side) + var(--list-box-shadow-blur-radius) + var(--list-box-shadow-spread-radius));display:grid;gap:var(--card-gap);grid-template-columns:repeat(auto-fit,minmax(var(--card-width),1fr));align-content:start}.card{height:max-content;padding:var(--padding-side);cursor:pointer;transition:all var(--trans-duration);border:1px solid hsla(0,0%,100%,0.5)}.card.raw{border:1px solid currentColor}.card:not(.raw){box-shadow:0 0.075rem var(--list-box-shadow-blur-radius) var(--list-box-shadow-spread-radius) currentColor;border-radius:var(--list-border-radius)}.card:not(.raw).pointing::after{transform:translate(-150%,100%)}.card:not(.raw).pointing:hover::after{transform:translate(-50%,100%)}.card:not(.raw):hover{box-shadow:0 0.15rem var(--list-box-shadow-blur-radius) calc(0.9 * var(--list-box-shadow-spread-radius)) currentColor}.card.bounce-in-half{--trans-duration-card-back:0.4s;--bounce-in-half-scale-from:1;--bounce-in-half-opacity-from:0.01;--bounce-in-half-scale-mid:1.08;--bounce-in-half-opacity-mid:0.5;animation:bounce-in-half var(--trans-duration-card-back)}.card>dd{margin:unset;cursor:initial;pointer-events:none;padding-bottom:0}.card.pointing>dd>dl>[list-container]{height:unset;min-height:100%}dl.invisible>.card-list>.card{position:unset}dl.invisible>.card-list>.card.pointing::after{display:none}.card>dd>dl.slide-back-vertically{animation:slide-back-vertically-card var(--trans-duration-card-back)}@keyframes slide-back-vertically-card{from{transform:translateY(var(--slide-in));opacity:0.88}to{transform:translateY(0);opacity:0.12}}.card>dd>dl.slide-back-vertically>header{font-size:var(--dt-font-size);padding-left:var(--padding-side)}.card>dd>dl.slide-back-vertically>header::before{content:none}.card>dd>dl.slide-back-vertically>[list-container]{display:none}.hide{display:none}.pointing{position:relative}.pointing::after{content:'❯';position:absolute;top:0;right:0;transform:translateX(-50%);transition:all var(--trans-duration)}.pointing:hover::after{transform:translateX(3%)}.pointing:active::after{opacity:0;visibility:hidden}.visible{visibility:visible;pointer-events:all}.invisible{visibility:hidden;pointer-events:none}.slide-in{transform:translateX(var(--slide-in))}.slide-back{transform:translateX(var(--slide-back));opacity:0}.next-in{transform:translateX(var(--slide-back));transition-delay:var(--trans-delay);opacity:unset;z-index:2}.prev-back{transition-delay:var(--trans-delay)}.slide-in-vertically{animation:slide-in-vertically var(--trans-duration) forwards;min-height:100vh}@keyframes slide-in-vertically{from{transform:translateY(var(--slide-back));opacity:0}to{transform:translateY(0);opacity:1}}.slide-back-vertically{animation:slide-back-vertically var(--trans-duration) forwards}@keyframes slide-back-vertically{from{transform:translateY(0);opacity:1}to{transform:translateY(var(--slide-back));opacity:0}}.next-in-vertically{transform:translateY(var(--slide-back))}.prev-dusky{animation:prev-dusky var(--trans-duration)}@keyframes prev-dusky{to{background-color:var(--dusky-color)}}.prev-dusky-back{pointer-events:none;animation:prev-dusky-back var(--trans-duration)}@keyframes prev-dusky-back{from{background-color:var(--dusky-color)}to{background-color:unset}}a{text-decoration:none;color:var(--link-color,dodgerblue)}.code-font{font-family:var(--code-font-family)}img.icon,img[icon]{width:2ch;margin-top:-0.25ch;margin-right:0.95ch;vertical-align:middle;object-fit:scale-down}input{color:var(--color);background-color:transparent;border:thin solid transparent;border-bottom-color:var(--color-pink);outline:none}input:focus{border-color:var(--color-pink)}input[type=checkbox]{--scale:scale(2);transform:var(--scale);vertical-align:middle;margin:0 var(--padding-side);cursor:pointer}input.two-digits{width:2ch;text-align:right}label.flex,label[flex]{width:100%}label.flex>input[type=checkbox],label[flex]>input[type=checkbox]{transform:var(--scale) translateY(25%);float:right}select{border:none;outline:none;color:inherit;background-color:var(--color-bg);cursor:pointer;min-width:2rem}dt>select{max-width:50%;text-align:right}[replace-select-arrow]{appearance:none;--arrow-padding:calc(4 * var(--list-padding));padding-right:var(--arrow-padding)}[replace-select-arrow]::after{content:var(--sym-down-thin);pointer-events:none;margin-left:calc(-1 * var(--arrow-padding))}ul[less-indent]{padding-left:1rem}.flash{animation:flash 125ms linear 4 alternate}@keyframes flash{to{background:hsla(0,0%,60%,60%)}}.larger,[larger]{font-size:larger}.outline{--outline:currentColor var(--outline-width) solid;--outline-width:2px;--outline-offset:2px;outline:var(--outline);outline-offset:var(--outline-offset);margin:calc(var(--outline-width) + var(--outline-offset))}.outline-blink{animation:1s outline-blink 3 forwards}@keyframes outline-blink{from{outline-width:0}to{outline-width:var(--outline-width)}}.pink{color:var(--color-pink)}.underline{text-decoration:underline}.underline-blink{animation:1s underline-blink 3 forwards}@keyframes underline-blink{from{text-decoration-thickness:0}to{text-decoration-thickness:0.08rem}}</style>
+    <style>:host{--trans-duration:0.3s;--trans-delay:0.1s;--slide-dir:-1;--slide-in:calc(var(--slide-dir) * 100%);--slide-back:calc(-1 * var(--slide-in));--padding-side:0.5rem;--margin-side-base:0.6rem;--margin-side:var(--margin-side-base);--max-width:var(--global-max-width,35rem);--dividing-line-color:#70809090;--dividing-line:1px solid var(--dividing-line-color);--items-dividing-line:var(--dividing-line);--group-dividing-line:var(--dividing-line);--list-color:#08f3;--list-border-radius:var(--padding-side);--list-padding:0.3rem;--list-box-shadow-blur-radius:calc(2.15 * var(--list-padding));--list-box-shadow-spread-radius:calc(-1 * var(--list-padding));--sym-x:'✖';--sym-left:'❮';--sym-right:'❯';--sym-back:var(--sym-left);--sym-down-thin:'⌵';--sym-gap:0.55rem;--sym-margin:0 0.8rem 0 0.5rem;--dusky-color:hsla(0,0%,0%,0.05);--dusky-color-dark:hsla(0,0%,100%,0.05);--header-background-color:hsla(0,0%,0%,0.01);--header-background-color-dark:hsla(0,0%,100%,0.025);--header-box-shadow-color:hsla(0,0%,0%,0.15);--header-box-shadow-color-dark:hsla(0,0%,100%,0.15);--header-font-size:1.5rem;--dt-font-size:1.15rem;--bounce-in:bounce-in 0.15s}:host-context([data-theme=dark]){--dusky-color:var(--dusky-color-dark);--header-background-color:var(--header-background-color-dark);--header-box-shadow-color:var(--header-box-shadow-color-dark)}:host([data-theme=dark]){--dusky-color:var(--dusky-color-dark);--header-background-color:var(--header-background-color-dark);--header-box-shadow-color:var(--header-box-shadow-color-dark)}:host{display:flex;justify-content:center;position:relative;padding:var(--padding-side) 0;height:calc(100% - 2 * var(--padding-side));overflow:hidden;pointer-events:auto;text-align:start;user-select:text}@media (orientation:landscape){:host>dl{max-width:var(--max-width)}}:host,*{transition:all var(--trans-duration)}dl{--dl-padding-side:1rem;position:relative;flex-grow:1;display:flex;flex-direction:column;align-items:start;padding:0 var(--dl-padding-side);background-color:var(--color-bg);margin:0}:host>dl{position:sticky;top:0;bottom:0;overscroll-behavior:none}dd>dl>*{color:var(--color)}dt[list-flavor=panel]+dd>dl{--border-width:2px;--border-style:solid var(--list-color);--border:var(--border-width) var(--border-style);border:var(--border);border-top:none;border-bottom:0 var(--border-style);border-radius:var(--list-border-radius);margin-block-start:unset;margin-block-end:unset}dt[list-flavor=panel]+dd.expand>dl{border-bottom:var(--border);padding-top:var(--list-padding)}header{font-size:var(--header-font-size);padding:var(--padding-side) 0;margin:0 calc(-2 * var(--padding-side));background-color:var(--header-background-color);box-shadow:0 2px 4px 1px var(--header-box-shadow-color);pointer-events:none}header::before,header::after{cursor:pointer;pointer-events:auto}header::before{display:inline-block;content:var(--sym-back);padding:0 var(--sym-gap);margin-right:calc(1.2 * var(--sym-gap))}:host>dl>header{background-color:unset;box-shadow:none;margin-left:unset}:host>dl>header::before{content:none}:host>dl>header::after{content:var(--sym-x);float:inline-end;margin-left:var(--sym-gap)}dl>[list-container]{width:100%;height:calc(100% - 2 * var(--padding-side) - var(--margin-side));padding-top:calc(var(--padding-side) + var(--margin-side));overflow-y:auto;overflow-x:hidden}:host>dl>[list-container]{overscroll-behavior:none}dl>[list-container][list-style=compact]{height:unset;padding-top:unset;--items-dividing-line:none}dt[list-flavor=flex]+dd>dl>[list-container]{display:flex;justify-content:space-around;height:unset;padding-top:unset;flex-wrap:wrap;gap:1rem 0rem}dt[list-flavor=grid]+dd>dl>[list-container]{width:unset;padding:var(--padding-side);padding-top:calc(2 * var(--padding-side))}dt[list-flavor=panel]+dd>dl>[list-container]{padding-top:unset;overflow:hidden}dt[list-flavor=choose]+dd>dl>[list-container]{--items-dividing-line:none;--checkmark-width:1.75rem;padding-left:var(--checkmark-width)}dt{display:flex;justify-content:space-between;align-items:center;cursor:pointer;font-size:var(--dt-font-size)}dt:empty{display:none}dt:not(:first-child){margin-top:var(--margin-side)}[list-container].no-dividing-line>dd{margin-top:calc(var(--margin-side) / 2)}[list-container]>[group]>dt{padding-top:unset;border-top:unset}dt[end],dt[as-placeholder]{cursor:default}dt[list-flavor=panel]{--panel-text-padding:calc(2 * var(--list-padding));position:relative;padding-top:var(--list-padding);border-top:unset;text-indent:var(--panel-text-padding);border-radius:var(--list-border-radius) var(--list-border-radius) 0 0;background-color:var(--list-color)}dt[list-flavor=panel]:not(:first-child)::before{content:'';width:100%;height:1px;background-color:var(--dividing-line-color);position:absolute;top:calc(-1 * var(--margin-side))}dt[list-flavor=panel]::after{content:var(--sym-left);transform:rotate(-90deg);transform-origin:75% center;transition-duration:inherit;position:absolute;right:calc(1.2 * var(--panel-text-padding));line-height:0}dt[list-flavor=panel].dd-expanded::after{transform:rotate(90deg)}dt[list-flavor=panel]+dd>dl>[list-container]>dt[list-flavor=panel]{margin-top:var(--margin-side)}dt[list-flavor=flex]{cursor:default}dt[list-flavor=flex]+dd>dl>[list-container]>dt{margin:0 var(--margin-side);width:unset;cursor:pointer;padding-top:unset;border-top:unset;flex-grow:1;pointer-events:none}dt[list-flavor=flex]+dd>dl>[list-container]>dt[end]{justify-content:center}dt[list-flavor=flex]+dd>dl>[list-container]>dt>*{pointer-events:auto}dt[list-flavor=flex]+dd{line-height:unset}dt[list-flavor=choose]+dd>dl>[list-container]>dt{justify-content:unset;cursor:pointer}dt[list-flavor=choose]+dd>dl>[list-container]>dt:not(:first-child){margin:calc(var(--margin-side) * 1.5) 0}dt[list-flavor=choose]+dd>dl>[list-container]>dt>.default-checkmark{position:relative;left:calc(-1 * var(--checkmark-width));width:var(--checkmark-width);margin-right:calc(-1 * var(--checkmark-width));line-height:1rem}dt[list-flavor=sub-flat]{--size:1rem;cursor:default;border-top:1px rgba(128,128,128,0.75) solid;font-size:var(--size);color:var(--color-gray);opacity:0.85;padding-top:calc(var(--size) / 2)}dt[list-flavor=sub-flat]:first-of-type{border-top:unset;padding-top:unset}dt[list-flavor=sub-flat]+dd{border-bottom:none}dt[list-flavor=sub-flat]+dd>dl,dt[list-flavor=sub-flat]+dd>dl>[list-container]{padding:unset}dt *{font-size:inherit}[dt-icon-wrapper]{display:inline-grid;place-items:center;width:1.5rem;margin:var(--sym-margin)}dt[list-flavor=panel]>*{pointer-events:none}dd{margin:var(--margin-side) 0;color:var(--color-gray);font-size:0.875rem;line-height:1.25rem;letter-spacing:0.2px;overflow:clip}dd:not(:last-child){border-bottom:var(--items-dividing-line)}dt[list-flavor=sub-flat]+dd>dl>[list-container]>dd:empty{border-bottom:unset}dd.no-dividing-line,[list-container].no-dividing-line>dd:not(.dividing-line){border-bottom:unset;height:1px}dd+.dividing-line{border-top:var(--items-dividing-line);margin-bottom:calc(2 * var(--padding-side));pointer-events:none}[list-container].no-dividing-line>dd+.dividing-line{margin-bottom:var(--padding-side)}dt[end]+dd:not(:last-child,:empty){padding-bottom:var(--padding-side)}@supports not (overflow:clip){dd{--margin-side:calc(var(--margin-side-base) / 2);overflow:hidden;padding-bottom:var(--margin-side)}dt:not(:first-child){padding-top:var(--margin-side-base)}dd+dt{padding-top:unset !important}}dt:empty+dd{margin-top:calc(-1 * var(--margin-side));margin-bottom:calc(-0.5 * var(--margin-side))}dt[list-flavor=panel]+dd{background-color:var(--list-color);border-radius:0 0 var(--list-border-radius) var(--list-border-radius);margin-top:unset;margin-bottom:calc(var(--list-padding) + var(--margin-side));padding-top:unset;padding-bottom:var(--list-padding);border-bottom:var(--items-dividing-line)}dt[list-flavor=panel]+dd.expand{padding-top:calc(var(--margin-side) / 2);padding-bottom:unset}dd>*{--margin-refine:1rem}dd>:not(a){display:block}dd>:last-child{padding-bottom:calc(-1 * var(--margin-refine))}dd>*>[data-brief-desc],dd>*>[data-full-desc]{display:inline-block}dd>*>[data-brief-desc]{cursor:pointer}dd>*>[data-full-desc]{height:0;overflow:hidden;opacity:0}dd>*>[data-full-desc].expand{height:unset;margin:calc(var(--margin-refine) / 2) 0 var(--margin-refine);opacity:unset}[list-container]>[group]{padding-top:var(--margin-side);border-top:var(--group-dividing-line)}.absolute{position:absolute;top:0;bottom:0;left:0;right:0;z-index:1}.collapse{height:0;visibility:hidden}.bounce-in{animation:var(--bounce-in)}@keyframes bounce-in{0%{transform:scale(var(--bounce-in-scale-from,0));opacity:var(--bounce-in-opacity-from,0)}90%{transform:scale(var(--bounce-in-scale-mid,1.15));opacity:var(--bounce-in-opacity-mid,1)}100%{transform:scale(1)}}.bounce-in-half{animation:var(--bounce-in-half)}@keyframes bounce-in-half{0%{transform:scale(var(--bounce-in-half-scale-from,0));opacity:var(--bounce-in-half-opacity-from,0)}50%{transform:scale(var(--bounce-in-half-scale-mid,1.15));opacity:var(--bounce-in-half-opacity-mid,1)}100%{transform:scale(1)}}.card-list{--per-row:5;--card-width:calc(var(--max-width) / var(--per-row));--card-gap:calc(var(--padding-side) + var(--list-box-shadow-blur-radius) + var(--list-box-shadow-spread-radius));display:grid;gap:var(--card-gap);grid-template-columns:repeat(auto-fit,minmax(var(--card-width),1fr));align-content:start}.card{height:max-content;padding:var(--padding-side);cursor:pointer;transition:all var(--trans-duration);border:1px solid hsla(0,0%,100%,0.5)}.card.raw{border:1px solid currentColor}.card:not(.raw){box-shadow:0 0.075rem var(--list-box-shadow-blur-radius) var(--list-box-shadow-spread-radius) currentColor;border-radius:var(--list-border-radius)}.card:not(.raw).pointing::after{transform:translate(-150%,100%)}.card:not(.raw).pointing:hover::after{transform:translate(-50%,100%)}.card:not(.raw):hover{box-shadow:0 0.15rem var(--list-box-shadow-blur-radius) calc(0.9 * var(--list-box-shadow-spread-radius)) currentColor}.card.bounce-in-half{--trans-duration-card-back:0.4s;--bounce-in-half-scale-from:1;--bounce-in-half-opacity-from:0.01;--bounce-in-half-scale-mid:1.08;--bounce-in-half-opacity-mid:0.5;animation:bounce-in-half var(--trans-duration-card-back)}.card>dd{margin:unset;cursor:initial;pointer-events:none;padding-bottom:0}.card.pointing>dd>dl>[list-container]{height:unset;min-height:100%}dl.invisible>.card-list>.card{position:unset}dl.invisible>.card-list>.card.pointing::after{display:none}.card>dd>dl.slide-back-vertically{animation:slide-back-vertically-card var(--trans-duration-card-back)}@keyframes slide-back-vertically-card{from{transform:translateY(var(--slide-in));opacity:0.88}to{transform:translateY(0);opacity:0.12}}.card>dd>dl.slide-back-vertically>header{font-size:var(--dt-font-size);padding-left:var(--padding-side)}.card>dd>dl.slide-back-vertically>header::before{content:none}.card>dd>dl.slide-back-vertically>[list-container]{display:none}.hide{display:none}.pointing{position:relative}.pointing::after{content:'❯';position:absolute;top:0;right:0;transform:translateX(-50%);transition:all var(--trans-duration)}.pointing:hover::after{transform:translateX(3%)}.pointing:active::after{opacity:0;visibility:hidden}.visible{visibility:visible;pointer-events:all}.invisible{visibility:hidden;pointer-events:none}.slide-in{transform:translateX(var(--slide-in))}.slide-back{transform:translateX(var(--slide-back));opacity:0}.next-in{transform:translateX(var(--slide-back));transition-delay:var(--trans-delay);opacity:unset;z-index:2}.prev-back{transition-delay:var(--trans-delay)}.slide-in-vertically{animation:slide-in-vertically var(--trans-duration) forwards;min-height:100vh}@keyframes slide-in-vertically{from{transform:translateY(var(--slide-back));opacity:0}to{transform:translateY(0);opacity:1}}.slide-back-vertically{animation:slide-back-vertically var(--trans-duration) forwards}@keyframes slide-back-vertically{from{transform:translateY(0);opacity:1}to{transform:translateY(var(--slide-back));opacity:0}}.next-in-vertically{transform:translateY(var(--slide-back))}.prev-dusky{animation:prev-dusky var(--trans-duration)}@keyframes prev-dusky{to{background-color:var(--dusky-color)}}.prev-dusky-back{pointer-events:none;animation:prev-dusky-back var(--trans-duration)}@keyframes prev-dusky-back{from{background-color:var(--dusky-color)}to{background-color:unset}}a{text-decoration:none;color:var(--link-color,dodgerblue)}.code-font{font-family:var(--code-font-family)}img.icon,img[icon]{width:2ch;max-height:2ch;margin-top:-0.25ch;margin-right:0.95ch;vertical-align:middle;object-fit:scale-down}input{color:var(--color);background-color:transparent;border:thin solid transparent;border-bottom-color:var(--color-pink);outline:none}input:focus{border-color:var(--color-pink)}input[type=checkbox]{--scale:scale(2);transform:var(--scale);vertical-align:middle;margin:0 var(--padding-side);cursor:pointer}input.two-digits{width:2ch;text-align:right}label.flex,label[flex]{width:100%}label.flex>input[type=checkbox],label[flex]>input[type=checkbox]{transform:var(--scale) translateY(25%);float:right}select{border:none;outline:none;color:inherit;background-color:var(--color-bg);cursor:pointer;min-width:2rem}dt>select{max-width:50%;text-align:right}[replace-select-arrow]{appearance:none;--arrow-padding:calc(4 * var(--list-padding));padding-right:var(--arrow-padding)}[replace-select-arrow]::after{content:var(--sym-down-thin);pointer-events:none;margin-left:calc(-1 * var(--arrow-padding))}ul[less-indent]{padding-left:1rem}.flash{animation:flash 125ms linear 4 alternate}@keyframes flash{to{background:hsla(0,0%,60%,60%)}}.larger,[larger]{font-size:larger}.outline{--outline:currentColor var(--outline-width) solid;--outline-width:2px;--outline-offset:2px;outline:var(--outline);outline-offset:var(--outline-offset);margin:calc(var(--outline-width) + var(--outline-offset))}.outline-blink{animation:1s outline-blink 3 forwards}@keyframes outline-blink{from{outline-width:0}to{outline-width:var(--outline-width)}}.pink{color:var(--color-pink)}.underline{text-decoration:underline}.underline-blink{animation:1s underline-blink 3 forwards}@keyframes underline-blink{from{text-decoration-thickness:0}to{text-decoration-thickness:0.08rem}}</style>
     </template>`
       const templateName = 'i-🎿'
-      class slimen extends HTMLElement {
+      class SliMen extends HTMLElement {
         constructor(config) {
           if (!(config && config.constructor === Object)) return null
           super(config)
@@ -612,8 +682,8 @@
           )
         }
         connectedCallback() {
-          slimen.cssDelay = cssDelay = { animationDuration: getTransTotalTime.call(this), frameInterval: 20 }
-          if (window.isChrome && 89 <= window.ChromeVersion && window.ChromeVersion <= 999) {
+          SliMen.cssDelay = cssDelay = { animationDuration: getTransTotalTime.call(this), frameInterval: 20 }
+          if (window.isChrome && 89 <= window.ChromeVersion && window.ChromeVersion <= 129) {
             this.firstDl.addEventListener('pointerenter', () => {
               requestAnimationFrame(() => {
                 this.firstDl.style.top =
@@ -627,7 +697,7 @@
           goHome(this.shadowRoot.querySelector('header'))
           return new Promise(done => setTimeout(done, cssDelay.animationDuration))
         }
-        static appendLi(listContainer, items) {
+        static appendd(listContainer, items) {
           if (!Array.isArray(items)) items = [items]
           const dl = listContainer.closest('dl')
           const menuStruct = dl.dataItem
@@ -637,10 +707,10 @@
           return dtDds
         }
         static iterEach(list, fn) {
-          Array.isArray(list) && list.forEach(item => (fn(item), slimen.iterEach(item.list, fn)))
+          Array.isArray(list) && list.forEach(item => (fn(item), SliMen.iterEach(item.list, fn)))
         }
-        static setWrapSpan(list) {
-          slimen.iterEach(list, item => item.wrapSpan = true)
+        static setwrapWithSpan(list) {
+          SliMen.iterEach(list, item => item.wrapWithSpan = true)
         }
         static detect = {
           intrPage: item => item.list && item.list.length === 1 && item.list[0].def && !item.list[0].term
@@ -649,7 +719,7 @@
           string: item => typeof item.def === 'string' && (item.def = item.def.replace(/\$\{([^}]+)\}/g, (_, $) => eval($)))
         }
       }
-      customElements.define(templateName, window.slimen = slimen)
+      customElements.define(templateName, window.SliMen = SliMen)
       let cssDelay
       function genMenu(menuStruct, dt, dd) {
         if (!(menuStruct && menuStruct.constructor === Object)) return
@@ -721,11 +791,11 @@
         const listContainer = document.createElement('div')
         listContainer.setAttribute('list-container', '')
         if (listObj) addCustomAttrs(listObj.attrs, listContainer)
-        listContainer.appendLi = appendLi
+        listContainer.appendd = appendd
         return listContainer
       }
-      function appendLi(...lis) {
-        return slimen.appendLi(this, lis)
+      function appendd(...lis) {
+        return SliMen.appendd(this, lis)
       }
       function genDtDds(menuStruct, listContainer, layerCount = 1) {
         if (!menuStruct.preload && (layerCount > 2 || !Array.isArray(menuStruct.list))) return listContainer
@@ -769,7 +839,8 @@
             case Array: elem.append(...item[typedD])
           }
         })
-        if (menuStruct.wrapSpan) dt.innerHTML = `<span>${dt.innerHTML}</span>`
+        const wrapWithSpan = () => dt.innerHTML = `<span>${dt.innerHTML}</span>`
+        if (menuStruct.wrapWithSpan) wrapWithSpan()
         dt.dd = dd
         dt.dataItem = item
         if (item.hasOwnProperty('id')) dt.setAttribute('id', item.id)
@@ -805,6 +876,9 @@
           list.some(list => Array.isArray(list.list) && list.list.length) && dt.setAttribute('data-more-list', '')
         } else {
           dt.setAttribute('end', '')
+          if (!dt.childElementCount && (
+            !menuStruct.hasOwnProperty('wrapWithSpan') || menuStruct.wrapWithSpan === undefined || menuStruct.wrapWithSpan
+          )) wrapWithSpan()
         }
         addCustomAttrs(item.attrs, dt)
         addListeners(dt, item, 'listener')
@@ -1022,7 +1096,7 @@
           nextPage.classList.replace('slide-in-vertically', 'slide-back-vertically')
         }
         if (dt.hasAttribute('data-more-list')) {
-          readdEventListener(prevPage, 'transitionend', e => clearClasses(e, { prevPage, nextPage }))
+          !e.detail.isPreload && readdEventListener(prevPage, 'transitionend', e => clearClasses(e, { prevPage, nextPage }))
         }
         else {
           const prevContainer = nextPage.closest('div')
@@ -1117,6 +1191,10 @@
           ]('collapse')
           const mod = shouldCollapse ? 'remove' : 'add'
           infoElem.classList[mod]('expand')
+          if (infoElem.classList.contains('expand')) {
+            infoElem.classList.remove('collapse')
+            if (infoElem.style.height === '0px') infoElem.style.height = ''
+          }
           infoElem.localName === 'dd' && infoElem.dt && infoElem.dt.classList[mod]('dd-expanded')
           updateHeightOfOuterDd(infoElem, elem)
         }
@@ -1133,15 +1211,17 @@
         if (!dd.dt) return
         dd = dd.dt.closest('dd')
         if (dd.dt.getAttribute('list-flavor') !== 'panel') return
-        listContainer.addEventListener('transitionend', () => {
-          delete listContainer._innerIsInTransition
-          updateStyleHeight(listContainer)
-          listContainer._pendingUpdateHeight && setTimeout(
-            listContainer._pendingUpdateHeight, cssDelay.animationDuration * 0.8
-          )
-        }, { once: true })
+        if (!window.isChromeMobile)
+          listContainer.addEventListener('transitionend', () => {
+            delete listContainer._innerIsInTransition
+            updateStyleHeight(listContainer)
+            listContainer._pendingUpdateHeight && setTimeout(
+              listContainer._pendingUpdateHeight,
+              cssDelay.animationDuration * 0.8
+            )
+          }, { once: true })
         listContainer = dd.querySelector('[list-container]')
-        listContainer._innerIsInTransition = true
+        if (!window.isChromeMobile) listContainer._innerIsInTransition = true
         listContainer.style.height = ''
         updateHeightOfOuterDd(dd, listContainer)
       }
@@ -1183,7 +1263,7 @@
     <style>:host{display:inline-flex;contain:content;align-items:center;position:relative;--switch-width:3rem;width:var(--switch-width);--switch-height:1.15rem;height:var(--switch-height);--switch-padding:0.2rem;padding:var(--switch-padding) 0;border-radius:1rem;outline:none;pointer-events:none;--checked-bg:hsl(228,74%,61%)}:host([disabled])>label{--dim-color:rgba(136,138,140,0.5);--dim:linear-gradient(var(--dim-color),var(--dim-color));background:var(--dim)}:host([disabled])>input:checked+label{background:var(--dim),linear-gradient(var(--checked-bg),var(--checked-bg))}:host([disabled])>.marker{background-color:hsla(0,0%,100%,0.5);box-shadow:inset var(--shadow)}:host-context([data-theme='dark']){--checked-bg:hsl(338,83%,63%)}input{height:100%;width:100%;margin:0;opacity:0;z-index:2}label{width:100%;height:100%;color:transparent;user-select:none;--base:hsla(240,10%,70%,0.5);background-color:var(--base);border-radius:inherit;transition:0.15s linear}input:checked+label{background-color:var(--checked-bg)}input,label{position:absolute;left:0;top:0;cursor:pointer}input:checked+label+.marker{left:calc(100% - var(--marker-diam) - var(--switch-padding))}.marker{position:relative;background-color:hsl(0,0%,100%);--marker-diam:var(--switch-height);width:var(--marker-diam);height:var(--marker-diam);border-radius:50%;z-index:2;pointer-events:none;--shadow:0 1px 1px rgba(0,0,0,0.25);box-shadow:var(--shadow);left:var(--switch-padding);transition:left 0.2s cubic-bezier(0.4,0,0.2,1)}</style>
     <input type='checkbox' id='input' aria-labelledby='the-label'><label for='input' id='the-label' aria-hidden='true'></label><div class='marker' aria-hidden='true'></div></template>`
       const $btnName = 'i-🔘'
-      customElements.define($btnName, window.sbtn = class sbtn extends HTMLElement {
+      customElements.define($btnName, window.SBtn = class SBtn extends HTMLElement {
         static get observedAttributes() {
           return ['checked']
         }
@@ -1214,7 +1294,7 @@
           })
         }
         attributeChangedCallback(name, oldValue, _newValue) {
-          if (name === 'checked' && oldValue === sbtn.false) return
+          if (name === 'checked' && oldValue === SBtn.false) return
           (this.checkbox.checked = this.checked)
             ? this.checkbox.setAttribute('checked', 'true')
             : this.checkbox.removeAttribute('checked')
@@ -1227,7 +1307,7 @@
         set checked(value) {
           value
             ? this.setAttribute('checked', true)
-            : (this.setAttribute('checked', sbtn.false),
+            : (this.setAttribute('checked', SBtn.false),
               this.removeAttribute('checked'))
         }
         get checked() {
@@ -1238,7 +1318,7 @@
           if (e) {
             ++this.byClick || (this.byClick = 1)
             this.checked = !this.checked
-            sbtn._dispatchEvent(
+            SBtn._dispatchEvent(
               this.getRootNode().getElementById(this.getAttribute('for')) || this,
               this
             )
@@ -1293,7 +1373,7 @@
           const isDelMode = [this._mode, this.getAttribute('mode')].includes('del')
           'onend onstop'.split(' ').forEach(on => this[`_${on}`] = this[`_${on}`] || this.getAttribute(on))
           this._times = Number(this._times || this.getAttribute('times') || (this._onend ? 1 : Infinity))
-          this._charWidth = Number(this._charWidth || this.getAttribute('char-width')) || 1
+          this._charWidth = Number(this._charWidth || this.getAttribute('char-width')) || (/[^\x00-\x7F]/.test(this.textContent) ? 2 : 1)
           const attrs = {
             time: this._time || this.getAttribute(['t', 'time'].find(name => this.hasAttribute(name))) || textLen / 2.5,
             speed: this._speed || parseFloat(this.getAttribute('speed')),
@@ -1304,7 +1384,7 @@
           assign_props(this, attrs)
           const cssRules = {
             ':host': {
-              width: `${textLen}ch`
+              width: `${textLen - Math.floor(this.textContent.replace(/[\x00-\x7F]+/g, '').length / this._charWidth)}ch`
             },
             ':host(.typing)': {
               animation: `typing ${attrs.duration}s steps(${attrs.steps}, jump-none) ${attrs.delay}s ${isDelMode ? 'reverse' : ''} forwards  `
@@ -1334,6 +1414,7 @@
           if (on === 'animationend') {
             this._loopedCount ? this._loopedCount += 1 : this._loopedCount = 1
             this._iterationCount ? this._iterationCount += 1 : this._iterationCount = 1
+            replaceCSSRules(this.shadowRoot, { ':host': { width: '' } })
           }
           if (this._iterationCount > this._times) {
             if (this.scrollWidth - document.documentElement.clientWidth > 0 ||
@@ -1429,7 +1510,7 @@
     })();
     (() => {
       genHTMLComp().outerHTML = `<template id='i-🎞️'>
-    <style name='style'>:host{--i-🍫-height:0.25rem}:host{display:flex;flex-direction:column;position:relative;align-items:center;cursor:default;place-self:center;overflow-x:hidden;overflow-x:clip}:host:fullscreen{outline:none}video{display:block;min-width:var(--video-width,60vw);max-width:100vw;max-height:100vh}@media (orientation:portrait){video{min-width:100vw}}:host-context(.mask) video{filter:opacity(0.03)}:host(.mask) video{filter:opacity(0.03)}:fullscreen video{min-width:100vw;min-height:100vh}.fadeout{animation:fadeout 0.2s forwards}@keyframes fadeout{from{opacity:1}to{opacity:0;visibility:hidden}}.fadein{animation:fadein 0.15s forwards}@keyframes fadein{from{opacity:0}to{opacity:1}}.semi-fadein{animation:semi-fadein 0.15s forwards}@keyframes semi-fadein{from{opacity:0.6}to{opacity:1}}.closer>*{padding:0}.selected{color:palevioletred !important}#videoContainer{display:grid;position:relative;justify-items:center}#progressBar{width:100%;height:var(--i-🍫-height);background:rgb(90,90,90);border-radius:0.15rem;border-top-left-radius:unset;border-top-right-radius:unset;overflow:hidden}#progressBar>div{width:0;height:100%}#buffered{background-color:rgb(150,150,150)}#progress{background-color:rgb(0,182,240);transform:translateY(-100%)}#controls{display:grid;grid-template-columns:1fr;grid-template-rows:repeat(2,1fr);gap:15%;grid-template-areas:'seek''playbackRate';align-items:flex-start;position:absolute}#controls button{border:none;background:transparent;font-size:100%;outline:none}#controls button:hover{filter:brightness(1.5)}#controls button:active{transform:scale(0.9)}#seek{display:grid;grid-template-columns:repeat(2,1fr);grid-template-rows:1fr;gap:0.2rem;grid-template-areas:'seekBackward seekForward';grid-area:seek;justify-content:center}#seekBackward{grid-area:seekBackward;justify-self:end}#seekForward{grid-area:seekForward;justify-self:start}#playbackRate{display:grid;grid-template-columns:2.3fr repeat(2,1fr);grid-template-rows:1fr;gap:0 5%;grid-template-areas:'x0.5 x1 x2';grid-area:playbackRate;justify-content:center}#playbackRate>[data-x=0.5]{grid-area:x0.5}#playbackRate>[data-x=1]{grid-area:x1}#playbackRate>[data-x=2]{grid-area:x2}#playbackRate>button{color:white}#playbackRate>button::before{content:attr(data-x) '×';background-color:rgba(0,0,0,0.8);padding:0 0.15rem}#mBtn{position:absolute;color:whitesmoke;mix-blend-mode:exclusion;right:0;padding:0.3rem 0.8rem 0.2rem;font-weight:bold;cursor:pointer;user-select:none;z-index:2}#menu{position:absolute;right:0;height:calc(100% - var(--i-🍫-height));background-color:var(--color-bg);transform:translateX(100%);transition:0.3s;z-index:1}#menu.show{box-shadow:currentColor -0.2rem 0 0.3rem -0.2rem;transform:translateX(0);transition:0.2s}.hide{display:none !important}</style>
+    <style name='style'>:host{--i-🍫-height:0.25rem}:host{display:flex;flex-direction:column;position:relative;align-items:center;cursor:default;place-self:center;overflow-x:hidden;overflow-x:clip}:host:fullscreen{outline:none}video{display:block;min-width:var(--video-width,60vw);max-width:100vw;max-height:100vh}@media (orientation:portrait){video{min-width:100vw}}:host-context(.mask) video{filter:opacity(0.03)}:host(.mask) video{filter:opacity(0.03)}:fullscreen video{min-width:100vw;min-height:100vh}.fadeout{animation:fadeout 0.2s forwards}@keyframes fadeout{from{opacity:1}to{opacity:0;visibility:hidden}}.fadein{animation:fadein 0.15s forwards}@keyframes fadein{from{opacity:0}to{opacity:1}}.semi-fadein{animation:semi-fadein 0.15s forwards}@keyframes semi-fadein{from{opacity:0.6}to{opacity:1}}.closer>*{padding:0}.selected{color:palevioletred !important}#videoContainer{display:grid;position:relative;justify-items:center}#progressBar{width:100%;height:var(--i-🍫-height);background:rgb(90,90,90);border-radius:0.15rem;border-top-left-radius:unset;border-top-right-radius:unset;overflow:hidden}#progressBar>div{width:0;height:100%}#buffered{background-color:rgb(150,150,150)}#progress{background-color:rgb(0,182,240);transform:translateY(-100%)}#controls{display:grid;grid-template-columns:1fr;grid-template-rows:repeat(2,1fr);gap:15%;grid-template-areas:'seek''playbackRate';align-items:flex-start;position:absolute}#controls button{border:none;background:transparent;font-size:100%;outline:none}#controls button:hover{filter:brightness(1.5)}#controls button:active{transform:scale(0.9)}#seek{display:grid;grid-template-columns:repeat(2,1fr);grid-template-rows:1fr;gap:0.2rem;grid-template-areas:'seekBackward seekForward';grid-area:seek;justify-content:center}#seekBackward{grid-area:seekBackward;justify-self:end}#seekForward{grid-area:seekForward;justify-self:start}#playbackRate{display:grid;grid-template-columns:2.3fr repeat(2,1fr);grid-template-rows:1fr;gap:0 5%;grid-template-areas:'x0_5 x1 x2';grid-area:playbackRate;justify-content:center}#playbackRate>[data-x='0.5']{grid-area:x0_5}#playbackRate>[data-x='1']{grid-area:x1}#playbackRate>[data-x='2']{grid-area:x2}#playbackRate>button{color:white}#playbackRate>button::before{content:attr(data-x) '×';background-color:rgba(0,0,0,0.8);padding:0 0.15rem}#mBtn{position:absolute;color:whitesmoke;mix-blend-mode:exclusion;right:0;padding:0.3rem 0.8rem 0.2rem;font-weight:bold;cursor:pointer;user-select:none;z-index:2}#menu{position:absolute;right:0;height:calc(100% - var(--i-🍫-height));background-color:var(--color-bg);transform:translateX(100%);transition:0.3s;z-index:1}#menu.show{box-shadow:currentColor -0.2rem 0 0.3rem -0.2rem;transform:translateX(0);transition:0.2s}.hide{display:none !important}</style>
     <div id='videoContainer'><video id='video'></video><div id='progressBar'><div id='buffered'></div><div id='progress'></div></div><div id='controls' class='hide' draggable='true'><div id='seek'><button id='seekBackward'>⏪</button><button id='seekForward'>⏩</button></div><div id='playbackRate'><button data-x='0.5'></button><button data-x='1'></button><button data-x='2'></button></div></div><div id='menu'></div><div id='mBtn' class='hide'>︙</div></div></template>`
       const vido = new IntersectionObserver(
         ([interEntry]) =>
@@ -1513,9 +1594,11 @@
           })
           v.addEventListener('progress', () => buffered.style.width = v.bufferedProgress * 100 + '%')
           v.addEventListener('timeupdate', () => { progress.style.width = v.currentTime / v.duration * 100 + '%'; v.checkFulfillment() })
-          v.networkState === v.NETWORK_LOADING && this._addSeekingHint(v)
-          v.addEventListener('waiting', this._addSeekingHint.bind(this, v))
-          v.addEventListener('canplay', this._removeSeekingHint.bind(this, v))
+          if (!isChromeMobile) {
+            v.networkState === v.NETWORK_LOADING && this._addSeekingHint(v)
+            v.addEventListener('waiting', this._addSeekingHint.bind(this, v))
+            v.addEventListener('canplay', this._removeSeekingHint.bind(this, v))
+          }
           const relaxationTime = 900, widgets = [controls, menu, mBtn]
           let dragging, pointerOverTime, pointerOverLock
           videoContainer.addEventListener('pointerover', e => {
@@ -1530,6 +1613,28 @@
             pointerOverTime = e.timeStamp
             toggleHide(...isTouchDevice ? [undefined, false] : [])
           })
+          videoContainer.addEventListener('pointerdown', () => {
+            clearTimeout(rush._tID)
+            rush._tID = setTimeout(rush.ing, 1000)
+            videoContainer.addEventListener('pointerup', () => {
+              clearTimeout(rush._tID)
+              rush.ed()
+            })
+          })
+          const rush = html`
+        <i-ꔹ accel style='position:absolute;left:5%;top:2%'>
+          ${genShadowText('3×')}
+        </i-ꔹ>
+      `
+          rush.ing = () => {
+            v.insertAdjacentElement('afterend', rush)
+            v._origPlaybackRate = v.playbackRate
+            v.playbackRate = 3
+          }
+          rush.ed = () => {
+            rush.remove()
+            v._origPlaybackRate && (v.playbackRate = v._origPlaybackRate)
+          }
           {
             menu.addEventListener('pointerleave', e => {
               if (isTouchDevice || e.relatedTarget === mBtn) return
@@ -1595,9 +1700,10 @@
             v.currentTime += skipTime
             this.showAndFadeOut(`+${skipTime}s`)
           })
+          if (isChromeMobile) [seekBackward, seekForward].forEach(el => el.remove())
           v.addEventListener('play', e => {
             if (window._currVid === e.target) return
-            window._currVid && window._currVid.pause()
+            if (!isTouchDevice) VidSet.pause()
             window._currVid = v
           })
           v.addEventListener('pause', () => {
@@ -1680,12 +1786,15 @@
           v._suspending = true
           if (!v._suspending) return
           this._seekingHint = this._seekingHint ||
-            this.shadowRoot.getElementById('videoContainer').appendChild(new spinr())
+            this.shadowRoot.getElementById('videoContainer').appendChild(new Spi())
         }
         _removeSeekingHint(v) {
           if (!v) return
           v._suspending = false
           this._seekingHint = this._seekingHint && this._seekingHint.remove()
+        }
+        static pause() {
+          window._currVid && window._currVid.pause()
         }
       })
       function arrFst(arg) {
@@ -1715,6 +1824,9 @@
             e.location === KeyboardEvent.DOM_KEY_LOCATION_NUMPAD && T.numPadPress(e.key); break
         }
       }, true)
+      document.addEventListener('visibilitychange', () => {
+        document.visibilityState === 'hidden' && VidSet.pause()
+      })
       if (window.isChrome) {
         let fullscreen_scrollY
         document.addEventListener('fullscreenchange', () => document.fullscreenElement
@@ -1760,35 +1872,32 @@
     })();
     ;
     ;
-    window._api = {
-      async googleSearch(q = '') {
-        return extractGoogleSearchResults(
-          await (await fetch(`https://google.com/search?q=${q}`)).text()
-        )
+    Object.assign(window, {
+      $id: (elemOrId, id) => {
+        if (typeof elemOrId === 'string') [elemOrId, id] = [document, elemOrId]
+        return (elemOrId.shadowRoot || elemOrId).getElementById(id)
       },
-      async googleSearchPredictions(q = '') {
-        return JSON.parse(
-          (
-            (await (await fetch(`https://www.google.com/complete/search?q=${q}&client=gws-wiz`)).text()).match(/\[\[".*]]/)
-            || [0]
-          )[0]
-        ) || []
-      }
-    }
-    Object.values(window._api).forEach(v =>
-      window[`$${v.name.match(/^[a-z]|(?<=[a-z])[A-Z]/g).join('').toLowerCase()}`] = v
-    )
+      body: document.body,
+      flash: elem => restartAnimation(elem, 'flash'),
+      html,
+      msg: (...a) => new Tosta(...a),
+    })
     const outsideSrc = { vid: [] }
-    btSites.$s = /\\?\$\{([^}_]{2,})\}/g
-    btSites.$ = str => str.replace(btSites.$s, (_, $1) => btSites.site[$1])
-    btSites.forEach(site => Object.assign(btSites.site = site, {
-      icon: btSites.$(site.icon),
-      ...typeof site.q === 'function' && { q: eval(btSites.$(site.q.toString())) }
-    }))
-    outsideSrc.vid.push(...streamSites)
-    outsideSrc.vid.push(...btSites.map(site => ({
-      site: site.domain, name: site.name, type: 'BT', icon: site.icon, q: site.q
-    })))
+    const evalSitesStr = (str, site = {}) => typeof str === 'string' ? str.replace(evalSitesStr.re, (_, $1) => site[$1]) : ''
+    evalSitesStr.re = /\\?\$\{([^}_]{2,})\}/g
+    const extractOrGenSiteName = (site = {}) => site.name || site.domain.replace(/\..+$/, '')
+    const convertSiteInf = (site = {}, moreInf) => Object.assign(site, {
+      name: extractOrGenSiteName(site),
+      domain: site.domain.toLowerCase(),
+      icon: evalSitesStr(site.icon, site).toLowerCase(),
+      ...moreInf
+    })
+    btSites.forEach(site => convertSiteInf(
+      site,
+      typeof site.q === 'function' && { q: eval(evalSitesStr(site.q.toString(), site)) }
+    ))
+    outsideSrc.vid.push(...streamSites.map(convertSiteInf))
+    outsideSrc.vid.push(...btSites.map(site => ({ ...site, type: 'BT' })))
     const proxies = proxyTracer(proxyURLs)
     const rules = URLForExRules
     rules.toString = function () { return this[0] }
@@ -1824,7 +1933,7 @@
         result: resultPattern(extractGoogleSearchResults)
       }
     }
-    function q(q, specify, { quotes } = {}) {
+    function q(q, specify, { quotes = true } = {}) {
       if (!q) return
       specify = specify && specify.constructor === Object && Object.entries(specify)
         .map(([key, val]) => specify[key] = val ? `+${key}:${val}` : '')
@@ -1838,10 +1947,10 @@
           switch (true) {
             case typeof resultText !== 'string': break
             case typeof this.pattern === 'function':
-              [[link, title] = []] = this.pattern(resultText); break
+              [[link, title] = []] = this.pattern(resultText) || Array(Array(2).fill('')); break
             case this.pattern instanceof RegExp:
               const mText = resultText.match(RegExp(this.pattern, ''))
-              mText && mText.forEach(str => str && (str.startsWith('http') ? link = str : title = str))
+              mText && mText.forEach(str => str && (str.startsWith('http') || str.startsWith('//') ? link = str : title = str))
           }
           return { link, title }
         }
@@ -1852,29 +1961,91 @@
       return extractGoogleSearchResults.resolveHtmlStr(htmlStr)
     }
     Object.assign(extractGoogleSearchResults, {
-      resultPart: /<div [^>]+? id="rso">[\s\S]*?<div id="bottomads"/,
+      resultPart: /<div id="taw">[^]+?(?=<div id="bottomads)/,
       googleLink: { start: /^https:\/\/(www.)?google.com\/url\?/, extract: /(?<=url=).*(?=&usg=)/ },
       resolveHtmlStr(htmlStr = '') {
         let results = (htmlStr.match(this.resultPart) || [])[0]
-        if (!results) return []
-        const dom = html(results)
+        if (!results) return null
+        const dom = html(results, 'div')
         try { dom.querySelector('.xpdopen').remove() } catch (e) { }
         const gs = dom.querySelectorAll('[class~=g]:not([class=g] [class=g])')
-        results = Array.prototype.filter.call(gs, el => el.classList.length <= 2)
-        if (!results.length) return []
-        return results.map(g => {
-          const a = g.querySelector('a')
-          const link = extractGoogleSearchResults.checkUrl(a.href)
+        results = Array.prototype.filter.call(gs, el => el.classList.length <= 2 || el.querySelector('h3'))
+        if (!results.length) return null
+        results = results.map(g => {
+          let href = g.querySelector('a').getAttribute('href')
+          href = prependToHref`https://google.com${href}`
+          const link = extractGoogleSearchResults.checkUrl(href)
           const title = g.querySelector('h3').innerHTML
-          let excerpt = Array.prototype.find.call(g.querySelectorAll('div[class*=" "]'), el => el.classList.length > 2 && !el.querySelector('svg'))
-          excerpt = excerpt ? excerpt.innerHTML : ''
+          let excerpt = this.extractExcerpt(g, '[data-sncf]')
+          excerpt = excerpt.length ? excerpt.map(v => (v.querySelectorAll('a').forEach(prependToHref.bind('https://google.com')), removeAllAttributes(v).innerHTML)).join('<br>') : ''
           return [link, title, excerpt]
         })
+        let taw = dom.querySelector('#taw')
+        if (!taw.querySelector('[role]')) taw = ''
+        taw = taw.innerText && removeAllAttributes(taw)
+        results.otherInfo = { ...taw ? { taw } : {} }
+        return results
+      },
+      extractExcerpt(g, selector, classLenThan = 2) {
+        const nodeNames = /\b(div|span|text)$/i
+        return Array.prototype.filter.call(g.querySelectorAll(selector), el => el.firstChild && (el.classList.length >= classLenThan ? nodeNames.test(el.firstChild.nodeName) : el.classList.length && el.querySelector('span[style="-webkit-line-clamp:2"]')) && !el.querySelector('svg'))
       },
       checkUrl(href) {
         return this.googleLink.start.test(href) ? decodeURIComponent(href.match(this.googleLink.extract)) : href
       }
     })
+    const vii = {
+      JAVLibrary: {
+        sites: {
+          'en': 'javlibrary.com/en',
+          'zh-CN': ['javlibrary.com/cn']
+        },
+        get site() {
+          let site = this.sites[this.langUse]
+          if (Array.isArray(site)) site = site[0]
+          return `${site.startsWith('http') ? '' : 'https://'}${site}`
+        },
+        async q(id, lang = _langs.chosen) {
+          this.langUse = lang
+          let pageHTML, url
+          const prefind = html(
+            pageHTML = await (
+              await fetch(url = `${this.site}/vl_searchbyid.php?list&keyword=${id}&page=1`)
+            ).text()
+          )
+          const page = !prefind.querySelector('.videotextlist') ? prefind :
+            html(
+              pageHTML = await (
+                await fetch(url =
+                  sort_table_rows(
+                    prefind.querySelector('.videotextlist'),
+                    [[2, -1], [1, -1, 'date']]
+                  )
+                    .shift()
+                    .querySelector('[href]').getAttribute('href')
+                    .replace('.', this.site)
+                )
+              ).text()
+            )
+          removeChilds(page, '#video_review td.text > :not(:last-child), #video_review td.icon')
+          const [info] = 'video_info'.split(' ').map($id.bind(0, page))
+          const review = insertAdjacentElements(
+            html`<div id=video_reviews></div>`,
+            dedupReviews(preTransformReviewEl(page.querySelectorAll('.review, .comment')))
+              .refed_plus_refs
+              .filter(_ =>
+                !_.textContent.startsWith('[url=http') &&
+                (_.innerHTML = _.innerHTML.replaceAll(/\[(url|img)]?.*?\[\/\1](<br>)*/g, (_, $1) => ({ url: '📎', img: '🖼️' })[$1]).replaceAll(/[-=]{3,}(<br>)*/g, '<hr>').replace(/(<br>)+/g, '$1'))
+              )
+              .map(_ => (_.insertAdjacentHTML('beforeend', `<span class=rev-scores>${_._recvScores}</span>`), _))
+          );
+          [info, review].forEach(elem => removeAllAttributes(elem, 'class translate', { defaultAllows: true, hrefToPrepend: this.site }))
+          review.addEventListener('dblclick', function () { css_collapseOrExpandSmoothly(this, { collapsedHeight: '64px', collapsedClass: 'unrevealed-' }) })
+          if (!info && lang === 'zh-CN') this.sites[lang] = this.sites[lang].concat(this.sites[lang].shift())
+          return { url, info, review }
+        }
+      }
+    }
     function arrayMoreThan(arr1, arr2) {
       [arr1, arr2] = [arr1, arr2].map(v => v.map(JSON.stringify))
       return arr1.filter(i => !arr2.includes(i)).map(JSON.parse)
@@ -1987,11 +2158,11 @@
     window.$clear = $clear
     function $clear(selector = '[output]', node = sel.focusNode._closest('[input]')) {
       switch (selector) {
-        case '[output]':
+        case '[output]': case 'onclick':
           if (node) {
             if (node.hasAttribute('[input]')) node = node.querySelector('[outputs]')
             if (node) {
-              const nodes = node.querySelectorAll(selector)
+              const nodes = node.querySelectorAll(selector.startsWith('on') ? '[output]' : selector)
               nodes.forEach(node => node.remove())
               break
             }
@@ -2016,12 +2187,54 @@
     }
     function setAttributes(elem, attrs = '') {
       attrs.split(' ').forEach(attr => elem.setAttribute(...attr.split('='), ''))
+      return elem
     }
-    function removeAllAttributes(elem) {
-      [...elem.attributes].forEach(attr => elem.removeAttribute(attr.name))
+    function removeAllAttributes(elem, allows, { defaultAllows, hrefToPrepend } = {}) {
+      if (!elem) return elem
+      if (allows && typeof allows === 'string') allows = allows.split(' ')
+      if (!Array.isArray(allows)) allows = removeAllAttributes._defaultAllows
+      if (defaultAllows) allows = [...new Set(allows.concat(removeAllAttributes._defaultAllows))];
+      [...elem.attributes].forEach(attr => {
+        if (allows.includes(attr.name)) {
+          if (attr.name === 'href' && typeof hrefToPrepend === 'string') prependToHrefOn(hrefToPrepend, elem)
+        }
+        else elem.removeAttribute(attr.name)
+      })
+      Array.prototype.forEach.call(elem.children, el => removeAllAttributes(el, allows, { hrefToPrepend }))
+      return elem
+    }
+    removeAllAttributes._defaultAllows = 'id role href'.split(' ')
+    function html(htmlStr, addEnclose) {
+      if (htmlStr.nodeType) return htmlStr
+      if (Array.isArray(htmlStr)) htmlStr = tmplStr(arguments)
+      const { content } = Object.assign(document.createElement('template'), { innerHTML: htmlStr.trim() })
+      return content.childElementCount <= 1
+        ? content.firstElementChild
+        : addEnclose ? html(`<${addEnclose}>${htmlStr}</${addEnclose}>`) : content
     }
     function htmlDecode(input) {
       return new DOMParser().parseFromString(input, 'text/html').documentElement.textContent
+    }
+    function sort_table_rows(tbody, priors = [[2, -1], [1, -1, 'date']], header = '.header') {
+      tbody = tbody.localName === 'tbody' ? tbody : tbody.querySelector('tbody') || /^t[dr]$/.test(tbody.localName) && tbody.closest('tbody')
+      if (!tbody) throw TypeError('No `<tbody>` was found.')
+      header = header instanceof Element ? header : typeof header === 'string' ? tbody.querySelector(header) : null
+      const trs = header ? [...tbody.children].filter(el => el !== header) : [...tbody.children]
+        , dict = new Map(trs.map(tr => [tr, '']))
+        , cmpText = (td, tdIdx, innerText) => ({ children: { [tdIdx]: { innerText } } } = td, innerText)
+        , sortArg = (a, b, tdIdx) => [a, b].map(td => cmpText(td, tdIdx))
+      priors.forEach(([tdIdx, dt, type = 'number']) => {
+        trs.sort((a, b) => (
+          [a, b] = sortArg(a, b, tdIdx),
+          dt * (type === 'number' ? a - b : a.localeCompare(b))
+        ))
+        trs.forEach((tr, i) => dict.set(tr, dict.get(tr) + i))
+      })
+      return trs.sort((a, b) => dict.get(a).localeCompare(dict.get(b)))
+    }
+    function insertAdjacentElements(toElem, HTMLCollection, pos = 'beforeend') {
+      for (const elem of HTMLCollection) toElem.insertAdjacentElement(pos, elem)
+      return toElem
     }
     function $__(target, ...args) {
       return [...target.querySelectorAll(...args)]
@@ -2048,12 +2261,6 @@
           callback()
         }, scrollStopDelay)
       })
-    }
-    function html(htmlStr) {
-      if (Array.isArray(htmlStr)) htmlStr = tmplStr(arguments)
-      return Object.assign(document.createElement('template'), {
-        innerHTML: htmlStr.trim()
-      }).content.firstElementChild
     }
     function isInView(el, mustBeTopmost) {
       const { top, bottom, x, y } = el.getBoundingClientRect()
@@ -2082,9 +2289,10 @@
         }),
       },
       _getCharsBeforeCaret: {
-        value(len) {
-          return this._getCaretChars(len, { leftPartOnly: true })
-        }
+        value(len) { return this._getCaretChars(len, { leftPartOnly: true }) }
+      },
+      _charBeforeCaret: {
+        get() { return this._getCharsBeforeCaret()[0] || '' }
       },
       _indentManually: {
         value() {
@@ -2093,16 +2301,23 @@
           this._range.collapse()
         }
       },
-      _lastNonBlankNodeOffset: {
+      _lastNonBlankOpts: {
+        value: {}
+      },
+      _lastNonBlankCharNode: {
         get() {
           let lastNonBlankOffset = -1
           let focusNode = this.focusNode
-          if (!focusNode) return { lastNonBlankOffset }
+          if (!(focusNode && focusNode.nodeType === Node.TEXT_NODE)) return { lastNonBlankOffset }
           let offset = sel.focusOffset, backOffset = 0
           const find = () => {
+            let char
             while (offset > 0) {
               --backOffset
-              if (!boundaryChars.blank.test(focusNode.data[--offset])) {
+              if (
+                !boundaryChars.blank.test(char = focusNode.data[--offset]) ||
+                this._lastNonBlankOpts.notCrossLine && char === '\n'
+              ) {
                 lastNonBlankOffset = offset
                 break
               }
@@ -2114,20 +2329,24 @@
             find()
           }
           find()
+          delete this._lastNonBlankOpts.notCrossLine
           return lastNonBlankOffset !== -1
             ? { lastNonBlankNode: focusNode, lastNonBlankOffset, backOffset, lastNonBlankChar: focusNode.data[lastNonBlankOffset] }
             : { lastNonBlankOffset }
         }
       },
-      _nextNonBlankNodeOffset: {
+      _nextNonBlankCharNode: {
         get() {
           let nextNonBlankOffset = -1
           let focusNode = this.focusNode
           if (!(focusNode && focusNode.data)) return { nextNonBlankOffset }
           let offset = sel.focusOffset, forthOffset = 0
           const find = () => {
+            let char
             while (offset < focusNode.data.length) {
-              if (!boundaryChars.blank.test(focusNode.data[offset])) {
+              if (!boundaryChars.blank.test(char = focusNode.data[offset]) ||
+                this._lastNonBlankOpts.notCrossLine && char === '\n'
+              ) {
                 nextNonBlankOffset = offset
                 break
               }
@@ -2141,10 +2360,17 @@
             find()
           }
           find()
+          delete this._lastNonBlankOpts.notCrossLine
           return nextNonBlankOffset !== -1
             ? { nextNonBlankNode: focusNode, nextNonBlankOffset, forthOffset, nextNonBlankChar: focusNode.data[nextNonBlankOffset] }
             : { nextNonBlankOffset }
         }
+      },
+      _lastNonBlankCharNodeInline: {
+        get() { this._lastNonBlankOpts.notCrossLine = true; return this._lastNonBlankCharNode }
+      },
+      _nextNonBlankCharNodeInline: {
+        get() { this._lastNonBlankOpts.notCrossLine = true; return this._nextNonBlankCharNode }
       },
       _moveCaret: {
         value(offset = 1) {
@@ -2154,6 +2380,52 @@
       _setFocusOffset: {
         value(focusOffset) {
           sel.setBaseAndExtent(sel.focusNode, focusOffset, sel.anchorNode, sel.anchorOffset)
+        }
+      },
+      _lastNonBlankSequence: {
+        get() {
+          const { lastNonBlankOffset, lastNonBlankNode, backOffset: prev } = this._lastNonBlankCharNode
+          if (!~lastNonBlankOffset) return { lastNonBlankSeqOffset: lastNonBlankOffset, lastNonBlankSeq: '' }
+          let offset, lastNonBlankSeqOffset, backOffset = 0
+          offset = lastNonBlankSeqOffset = lastNonBlankOffset
+          while (offset > 0) {
+            --backOffset
+            if (boundaryChars.blank.test(lastNonBlankNode.data[--offset])) {
+              ++backOffset
+              break
+            }
+            lastNonBlankSeqOffset = offset
+          }
+          backOffset += prev
+          return {
+            lastNonBlankSeqNode: lastNonBlankNode,
+            lastNonBlankSeqOffset,
+            backOffset,
+            lastNonBlankSeq: lastNonBlankNode.data.substring(lastNonBlankSeqOffset, lastNonBlankOffset + 1)
+          }
+        }
+      },
+      _nextNonBlankSequence: {
+        get() {
+          const { nextNonBlankOffset, nextNonBlankNode, forthOffset: next } = this._nextNonBlankCharNode
+          if (!~nextNonBlankOffset) return { nextNonBlankSeqOffset: nextNonBlankOffset, nextNonBlankSeq: '' }
+          let offset, nextNonBlankSeqOffset, forthOffset = 0
+          offset = nextNonBlankSeqOffset = nextNonBlankOffset
+          while (offset < nextNonBlankNode.length) {
+            ++forthOffset
+            if (boundaryChars.blank.test(nextNonBlankNode.data[++offset])) {
+              --forthOffset
+              break
+            }
+            nextNonBlankSeqOffset = offset
+          }
+          forthOffset += next
+          return {
+            nextNonBlankSeqNode: nextNonBlankNode,
+            nextNonBlankSeqOffset,
+            forthOffset,
+            nextNonBlankSeq: nextNonBlankNode.data.substring(nextNonBlankOffset, nextNonBlankSeqOffset)
+          }
         }
       }
     })
@@ -2235,7 +2507,7 @@
     function redirectInNewTab(event) {
       const T = event.composedPath()[0]
       let a;
-      [T, T.parentNode].find(el => el.localName === 'a' && (a = el))
+      [T, T.parentNode].find(el => el && el.localName === 'a' && (a = el))
       if (!a || a.hasAttribute('target') || a.onclick) return
       if (!a.hasAttribute('target')) {
         event.preventDefault()
@@ -2416,6 +2688,7 @@
       node._rewritten = true
       if (node.localName === 'img') node.removeAttribute('srcset')
       if (/^(\/\/|(https?|data|blob):|#)/.test(value)) return
+      regex.urlAsHref.lastIndex = 0
       node.setAttribute(key, value.replace(regex.urlAsHref, prependWhatToHrefSrc))
     }
     NodeList.prototype.scriptsChainLoad = scriptsChainLoad
@@ -2502,8 +2775,19 @@
     function clearChildNodes(node) {
       while (node.firstChild) node.removeChild(node.lastChild)
     }
+    function replaceChildNodes(node, ...newChildNodes) {
+      clearChildNodes(node)
+      node.append(...newChildNodes.length && newChildNodes || node._origChildNodes || [])
+    }
+    function removeChilds(node, selector = '*') {
+      if (!node) return
+      selector ? node.querySelectorAll(selector).forEach(el => el.remove()) : clearChildNodes(node)
+    }
     function isElem(node) {
       return node && node.nodeType === Node.ELEMENT_NODE
+    }
+    function getNthLevelParent(_node, level) {
+      return eval(`_node${'.parentNode'.repeat(level)}`)
     }
     Object.defineProperties(NodeList.prototype, {
       lastTextNode: { get() { return findLast(this, node => node.nodeType === Node.TEXT_NODE) } }
@@ -2512,13 +2796,13 @@
       url = proxy + url
       let cacheName
       if (fromCache) [cacheName] = await caches.keys()
-      return fromCache
+      return Object.fromEntries(fromCache
         ? [...(await (await caches.open(cacheName)).match(url)).headers]
         : [...(await fetch(url, {
           method: 'HEAD',
           ...navigator.serviceWorker && navigator.serviceWorker.controller &&
           { headers: { '--permit': true } }
-        })).headers]
+        })).headers])
     }
     async function urlApi(url = '', { useProxy, format = 'text' } = {}) {
       const proxyUrl = useProxy ? (window.proxyURLs || window.proxies || proxyURLs || proxies).pickFast() : ''
@@ -2545,8 +2829,8 @@
     const regex = {
       siteDN: /^\s*(?:<([^>]*)>\s*)?(?:https?:\/\/)?([^/?]+)/,
       dn_n_file: /^.*?\/\/(?:[^.]+\.(?=[^/]+\.(?:[^/]{3,})+\/))*(.*?\/).*?(\/?[^/]*\.(?:jpg|png)?)/,
-      urlAsHref_withName: /(?<=(?:href|src|action)=")(?!http|data|javascript|blob)(?:\.?\/+|(?=[?\w]))/g,
-      urlAsHref: /^(?!http|data|javascript|blob)(?:\.?\/+|(?=[?\w]))/g,
+      urlAsHref_withName: /(?<=(?:href|src|action)=")(?!http|data|javascript|blob)(?:\.?\/+|(?=[?\w]))/gy,
+      urlAsHref: /^$|^(?!\/\/|http|data|javascript|blob)(?:\.?\/+|(?=[?\w]))/gy,
       urlInJSON: /(?<!tps?:|(?:if|match|replace|split)\(["']?)(?<=\s*[(:=]\s*["']?(?!data:))((?=\\?\/(?!\/)))(?!(?<=[:=])\1)/g,
       urlInJSON_fileX: /(?<=["'])(?=\/[^"']*\.(?:aspx?|html?))/g,
       urlInCb: /(?<=\([^/]*?["'])(?=\/(?!\/))/g
@@ -2672,6 +2956,7 @@
       if (typeof f !== 'function') return
       try { return await f() }
       catch (_) {
+        console.error(_)
         try { return await f() }
         catch (e) { console.info(e) }
       }
@@ -2764,6 +3049,11 @@
           return Array.prototype.concat.apply(Array.prototype, this.map(mapFunction))
         }
       })
+    Array.prototype.at
+      ||
+      Object.defineProperty(Array.prototype, 'at', {
+        value: at
+      })
     Object.fromEntries
       ||
       Object.defineProperty(Object, 'fromEntries', {
@@ -2783,6 +3073,25 @@
           while (match = re.exec(this)) yield match
         }
       })
+    String.prototype.replaceAll
+      ||
+      Object.defineProperty(String.prototype, 'replaceAll', {
+        value(str, newStr) {
+          return this.replace(new RegExp(str, 'g'), newStr)
+        }
+      })
+    String.prototype.at
+      ||
+      Object.defineProperty(String.prototype, 'at', {
+        value: at
+      })
+    function at(n) {
+      n = Math.trunc(n) || 0
+      if (n < 0) n += this.length
+      if (n < 0 || n >= this.length) return undefined
+      return this[n]
+    }
+    ;
     const boundaryChars = {
       general: [...'~`!@#%^&*()+=|\\{}[\]:;"\'<>,.?/-'],
       blank: /\s/,
@@ -2798,8 +3107,9 @@
     const brackets = {
       left: ['{', '[', '(', '<'],
       right: ['}', ']', ')', '>'],
-      pair(char) { return this.right[this.left.indexOf(char)] || this.right[this.left.indexOf(char)] }
+      pair(char) { return this.right[this.left.indexOf(char)] || this.left[this.right.indexOf(char)] }
     }
+    brackets.regex = RegExp(`([${[brackets.left, ...brackets.right].map(char => `\\${char}`)}])`)
     Object.entries(brackets).forEach(function ([k, v]) {
       if (!Array.isArray(v)) return
       this[k]._regexp = RegExp(`(?:${v.map(v => `\\${v}`).join('|')})\\s*$`)
@@ -2809,6 +3119,10 @@
     const leftPairs = [...brackets.left, ...quotes]
     const rightPairs = [...brackets.right, ...quotes]
     const pairs = [...new Set([...leftPairs, ...rightPairs])]
+    function tryMatch(str = '', regex = /./) {
+      return (str.match(regex) || []).pop()
+    }
+    tryMatch.placeholder = []
     function $str(obj, space = 2) {
       return JSON.stringify(obj, null, space)
     }
@@ -2819,7 +3133,7 @@
       str = String(str)
       if (!_this) _this = this || {}
       try { return eval(`\`${str}\``) }
-      catch (_) { return eval(`\`${str.replace(/\$\{([^}]+)\}/g, '${_this.$1 || $1}')}\``) }
+      catch (_) { return eval(`\`${str.replace(/(?<=\$\{)([\w$]+)/g, '(_this.$1 ?? $1)')}\``) }
     }
     window.__currUrl = ''
     Object.defineProperty(window, '_currUrl', {
@@ -2832,8 +3146,19 @@
         })
       }
     })
+    function prependToHref(host, href, _href) {
+      if (_href) [host, href] = [href, _href]
+      if (Array.isArray(host)) [host] = host
+      regex.urlAsHref.lastIndex = 0
+      if (regex.urlAsHref.test(href)) href = `${host}${!host.endsWith('/') && !href.startsWith('/') ? '/' : ''}${href}`
+      return href
+    }
+    function prependToHrefOn(host, elem) {
+      elem.setAttribute('href', prependToHref`${host}${elem.getAttribute('href')}`)
+    }
     function prependToHrefSrc(html = '', url = '') {
       _currUrl = resolve_prependUrl(url)
+      regex.urlAsHref_withName.lastIndex = 0
       return html.replace(regex.urlAsHref_withName, prependWhatToHrefSrc)
     }
     function prependWhatToHrefSrc(matched) {
@@ -2877,6 +3202,27 @@
     }
     function parseStrToNumRange(str = '0..10++2') {
       return range(...str.match(/(-?\d+)/g).map(Number))
+    }
+    function splitTags(html) {
+      return html.split(/<[^>]+>/).filter(Boolean)
+    }
+    ;
+    Object.defineProperty(HTMLImageElement.prototype, '_pickPixel', { value: pickPixel })
+    function pickPixel(x, y) {
+      const img = this ?? pickPixel._img
+      const canvas = pickPixel._canvas ??= (console.log(`document.createElement('canvas')`), document.createElement('canvas'))
+      const ctx = pickPixel._ctx ??= canvas.getContext('2d')
+      if (img !== pickPixel._img) {
+        [canvas.width, canvas.height] = [img.naturalWidth, img.naturalHeight]
+        ctx.drawImage(img, 0, 0)
+      }
+      pickPixel._img = img
+      const pixel = ctx.getImageData(x, y, 1, 1)
+      const [r, g, b, α] = pixel.data
+      return [r, g, b, α / 255]
+    }
+    async function imgCORS(url) {
+      return Object.assign(new Image(), { src: URL.createObjectURL(await (await fetch(url)).blob()) })
     }
     ;
     function proxyTracer(proxies = []) {
@@ -3135,13 +3481,10 @@
       div.addEventListener('animationend', () => div.remove())
     }
     function setLock(stateObj, target) {
+      if (stateObj instanceof Element) [stateObj, target] = [target, stateObj]
       const stateRec = {
-        lock() {
-          this.locking = true
-        },
-        unlock() {
-          this.locking = false
-        },
+        lock() { this.locking = true },
+        unlock() { this.locking = false },
         softLock(time = CSSRelaxTime) {
           clearTimeout(this.lockingTimeSigil)
           this.lock()
@@ -3188,8 +3531,11 @@
       elem.addEventListener('animationend', () => elem.remove(), { once: true })
       elem.classList.add('unfold-from-top-inverse')
     }
-    function hasScrollableOverflow(elem) {
+    function isScrollableOverflow(elem) {
       return elem && elem.scrollWidth > elem.clientWidth
+    }
+    function isViewOverflow(elem) {
+      return elem && elem.scrollWidth > document.documentElement.clientWidth
     }
     function isMouseOn({ x, y, target } = {}, elem) {
       if (elem === false) return false
@@ -3199,8 +3545,9 @@
     }
     parent.initForStyleSmoothly = initForStyleSmoothly
     function initForStyleSmoothly(elem, originalStyle,
-      { customPrefix = `${elem.localName}`, observe } = {}
+      { customPrefix = 'expanded', observe } = {}
     ) {
+      if (elem.style.getPropertyValue('--expanded-height')) return elem
       if (typeof originalStyle === 'string') originalStyle = Object.fromEntries(originalStyle.split(/,? +/).map(v => [v, 0]))
       if (!originalStyle) originalStyle = pickKeys(getComputedStyle(elem), 'height, width')
       const inlineProps = Object.keys(originalStyle)
@@ -3213,6 +3560,7 @@
         .observe(this instanceof Element && this || elem, {
           childList: true, characterData: true, subtree: true
         })
+      return elem
     }
     function updateStyleSmoothly(elem, inlineProps = [], opts = {}) {
       if (this && Array.isArray(elem) || typeof elem === 'string') {
@@ -3279,6 +3627,18 @@
       })
       return elem
     }
+    function css_collapseOrExpandSmoothly(elem, { collapsedHeight, collapsedClass }) {
+      let collapsed
+      initForStyleSmoothly(elem)
+      updateStyleSmoothly(elem, {
+        height: elem.clientHeight && Math.floor(elem.clientHeight) !== Math.floor(parseFloat(collapsedHeight))
+          ? collapsed = (collapsedHeight && typeof collapsedHeight === 'number' && (collapsedHeight += 'px'), collapsedHeight || 0)
+          : elem.style.getPropertyValue('--expanded-height')
+      })
+      collapsed = collapsed !== undefined
+      elem[`${collapsed ? 'set' : 'remove'}Attribute`]('collapsed', '')
+      collapsedClass && elem.classList[collapsed ? 'add' : 'remove'](collapsedClass)
+    }
     ;
     const pageStartTime = Date.now()
     function currPageTime() {
@@ -3303,29 +3663,31 @@
           .replace('GMT+0', 'GMT+')
           .replace(keepGMT ? '' : / ?GMT.*/, '')
     }
-    function timeoutIn(timeout = 3, { taskName, rival, log, doneAt, fallback } = {}) {
+    function timeoutIn(timeout = 3, { taskName, rival, log, doneAt, fallback, cLog } = {}) {
       const startAt = Date.now()
       const over = res => res(typeof fallback === 'function' ? fallback() : fallback)
-      const _log = signal => log !== false && console.log(
-        log !== undefined && typeof signal !== 'function'
-          ? typeof log === 'function' ? log(timeout, signal) : log
-          : `${taskName ? `${taskName}: ` : ''}Timed out (${timeout} seconds have passed).`
+      const _log = signal => log !== false && log !== undefined && (
+        typeof signal === 'string'
+          ? typeof log === 'function' ? log(timeout, signal) : console.log(log)
+          : typeof signal !== 'function' && console.log(`${taskName ? `${taskName}: ` : ''}Timed out (${timeout} seconds have passed).`)
       )
       let done
       rival && rival.constructor === Promise && rival.then(() => {
         done = true
         log && (
           () => {
-            switch (String(log.check).toLowerCase()) {
-              default:
+            const _case = String(log.check).toLowerCase()
+            switch (_case) {
               case 'abort': case 'cancel':
                 _log(log.check)
                 break
               case '[object object]':
               case 'success': case 'done': case 'ok':
-                console.log(
-                  taskName || 'Task', `was completed in ${typeof doneAt === 'function'
-                    ? ((doneAt() - startAt) / 1000).toFixed(3)
+              default:
+                typeof cLog === 'function' && cLog(
+                  log.check,
+                  `${taskName || 'Task'} was completed in ${typeof doneAt === 'function'
+                    ? ((doneAt() - startAt - (rival._delay * 1000 || 0)) / 1000).toFixed(3)
                     : `less than ${timeout}`
                   } seconds.`
                 )
@@ -3353,27 +3715,6 @@
       return new Promise(r => setTimeout(r, seconds * 1000))
     }
     ;
-    let isTouchDevice = window.isTouchDevice =
-      navigator.userAgentData && navigator.userAgentData.mobile ||
-      /Mobi|Android/i.test(navigator.userAgent) ||
-      window.ontouchstart
-    window.isFirefox = +String(navigator.userAgent.match(/Firefox\/[0-9]+/) || '').split('/')[1]
-    window.isChrome = /Google/.test(navigator.vendor)
-    window.ChromeVersion = isChrome && navigator.userAgentData && +(navigator.userAgentData.brands.find(v => /Chrom(e|ium)/.test(v.brand)) || {}).version
-    if (window.ChromeVersion === false) window.ChromeVersion = undefined
-    const CSSSupports = {
-      hostContext: (!isFirefox || CSS.supports('selector(:host-context(_'))
-        && !isTouchDevice
-    }
-    if (isChrome) {
-      document.documentElement.style.setProperty('--code-color-tint-for-chrome', 'rgba(215, 186, 125, 0.6)')
-    }
-    const getLanguage = () => (navigator.languages && navigator.languages.length && navigator.languages[0])
-      || navigator.language
-      || 'en'
-    window._userLang = new URL(location).searchParams.get('lang') || getLanguage()
-    window._isUserLangInCJK = () => window._userLangInCJK = _userLang.startsWith('zh')
-    window._isUserLangInCJK()
     function fampl(text, convertToOutput) {
       const { keysValsMap, keysValsPairs, texts } = extractText(text)
       if (convertToOutput) text = resFullText(texts)
@@ -3502,7 +3843,576 @@
       return select
     }
     ;
+    let getItem = key => op(o => o.
+      get(key)
+    )
+      , setItem = (key, value) => op(o => o.
+        put(value, key), 'readwrite'
+      )
+      , delItem = key => op(o => o.
+        delete(key), 'readwrite'
+      )
+      , _clearDB = () => op(o => o.
+        clear(), 'readwrite'
+      )
+      , clearDB = () => (console.log('🗑️ Local database cleared.'), _clearDB())
+      , storeName = ''
+      , rebuiltIDB = dbName => (
+        console.log('indexedDB will be rebuilt.'),
+        indexedDB.deleteDatabase(dbName), getIDB(dbName)
+      )
+      , onerror = e => { console.error(e.target.error); throw e.target.error }
+      , idb
+      , idbInit = (dbName = '') => idb = getIDB(dbName)
+      , idbUnavailable = () => {
+        const idbMethods = 'getItem, setItem, delItem, clearDB'.split(', ')
+        window._isBundled
+          ? eval(`[${idbMethods}] = Array(4).fill(noopChain)`)
+          : idbMethods.forEach(idbMethod => window[idbMethod] = noopChain)
+        idb = noopChain
+      }
+    const noopChain = genNoopChain()
+    function getIDB(dbName) {
+      return new Promise(res => (function () {
+        this.onupgradeneeded = () => {
+          this.result.createObjectStore(storeName)
+          console.log('indexedDB first time loaded.')
+        }
+        this.onsuccess = () => res(
+          this.result.objectStoreNames.contains(storeName)
+            ? window.idb = this.result
+            : rebuiltIDB(dbName)
+        )
+        this.onerror = onerror
+      }).call(indexedDB.open(dbName)))
+    }
+    async function getStore({ rwType = 'readonly' } = {}) {
+      return (await idb).transaction(storeName, rwType).objectStore(storeName)
+    }
+    async function op(call, rwType) {
+      call = call(await getStore({ rwType }))
+      return new Promise(res => {
+        call.onsuccess = () => res(call.result)
+        call.onerror = onerror
+      })
+    }
+    function genNoopChain() {
+      const _noopChain = () => noopChain
+      const retEmptyStr = () => ''
+      const noopChain = new Proxy(_noopChain, {
+        get(target, key) {
+          if (target.hasOwnProperty(key)) return target[key]
+          switch (key) {
+            case 'then': return undefined
+            case Symbol.toPrimitive: return retEmptyStr
+            default: return noopChain
+          }
+        }
+      })
+      return noopChain
+    }
+    ;
+    function dedupReviews(reviews) {
+      const dup_rev = {
+        set [Symbol.for()]([text, elem]) {
+          if (!Array.isArray(this[text])) this[text] = [elem]
+          else this[text].push(elem)
+        }
+      }
+      reviews.forEach(rev => splitTags(rev.innerHTML).forEach(txt => dup_rev[Symbol.for()] = [txt, rev]))
+      const dedup_rev = new Map
+      Object.values(dup_rev).forEach(el => {
+        if (el.length > 1)
+          el.forEach(e => {
+            dedup_rev.set(e, (dedup_rev.get(e) || 0) - 1)
+          })
+        else {
+          el = el.pop()
+          dedup_rev.set(el, (dedup_rev.get(el) || 0) + 1)
+        }
+      })
+      const final = { sing: [], refed: [], refs: [] };
+      [...dedup_rev.entries()].forEach(([el, count]) =>
+        final[count > 0 ? 'sing' : count < 0 ? 'refed' : 'refs'].push(el)
+      )
+      final.refed.sort((a, b) => ([a, b] = [a, b].map(_ => _.innerHTML.length), a - b)).map((s, i, arr) => {
+        if (i !== 0 &&
+          splitTags(arr[i - 1].innerHTML).sort().join('')
+          === splitTags(s.innerHTML).sort().join('')
+        ) {
+          delete arr[i - 1]._rec
+          s._rec = true
+        }
+        return s
+      }).forEach((el, i) => el._rec && final.sing.push(el) && delete final.refed[i])
+      Object.assign(final.sing, final)
+      Object.defineProperty(final.sing, 'sing_plus_refs', { get() { return this.sing.concat(this.refs) } })
+      Object.defineProperty(final.sing, 'refed_plus_refs', { get() { return this.sing.concat(this.refed, this.refs) } })
+      return final.sing
+    }
+    function preTransformReviewEl(el) {
+      if (el[Symbol.iterator]) return Array.prototype.map.call(el, preTransformReviewEl)
+      el.remove()
+      const [tUS, tDS] = Array.prototype.map.call(el.querySelectorAll('[class^=score]:not([class*=scores])'), _ => _.innerText)
+      return Object.assign(html`<p translate=no><span>${replaceBBCode(el.querySelector('textarea').innerHTML).replaceAll('\n', '<br>')}</span></p>`, { _recvScores: `👍 ${tUS}&emsp;👎 ${tDS}` })
+    }
+    function replaceBBCode(html) {
+      return replaceBBCode._unquote(html)
+        .replace(/\[(color)=[\S\s]*?\]([\S\s]*?)\[\/\1\]/g, '$2')
+        .replace(/\[(b)]([\S\s]*?)\[\/\1]/g, '<b>$2</b>')
+    }
+    replaceBBCode._unquote = html => {
+      const html_ = html.replace(/\[(quote)(?!.*?\1=)=[\S\s]*?\]([\S\s]*?)\[\/\1\]\s*/g, '<q>$2</q>')
+      return html_ === html ? `${html_.replace(/(<\/q>)((?:[^](?!\1))+)$/, '$1<br>$2')}` : replaceBBCode._unquote(html_)
+    }
+    Object.assign(window, { getItem, setItem, delItem, clearDB })
+      ;
+    ;
+    let dbUnavailable = false, swNotNeeded = window._isBundled ?? true
+    navigator.serviceWorker
+      ? idbInit('JAVivid')
+      : (dbUnavailable = true, idbUnavailable())
+    let isTouchDevice = window.isTouchDevice =
+      navigator.userAgentData && navigator.userAgentData.mobile ||
+      /Mobi|Android/i.test(navigator.userAgent) ||
+      window.ontouchstart ||
+      window.matchMedia('(any-hover: none)').matches
+    !isTouchDevice && document.documentElement.setAttribute('desktop', true)
+    window.isFirefox = +String(navigator.userAgent.match(/Firefox\/[0-9]+/) || '').split('/')[1]
+    window.isChrome = /Google/.test(navigator.vendor)
+    window.ChromeVersion = isChrome && navigator.userAgentData && +(navigator.userAgentData.brands.find(v => /Chrom(e|ium)/.test(v.brand)) || {}).version
+    if (window.ChromeVersion === false) window.ChromeVersion = undefined
+    window.isChromeMobile = isChrome && isTouchDevice
+    window.isFirefoxMobile = isFirefox && isTouchDevice
+    const CSSSupports = {
+      hostContext: (!isFirefox || CSS.supports('selector(:host-context(_'))
+        && !isTouchDevice
+    }
+    if (isChrome) {
+      document.documentElement.style.setProperty('--code-color-tint-for-chrome', 'rgba(215, 186, 125, 0.6)')
+    }
+    const getLanguage = () =>
+      navigator.languages && navigator.languages.length && navigator.languages[0]
+      || navigator.language
+      || 'en'
+    window._userLang = new URL(location).searchParams.get('lang') || getLanguage()
+    window._isUserLangInCJK = () => window._userLangInCJK = _userLang.startsWith('zh')
+    window._isUserLangInCJK()
+    const exceptRulesFrom = {}
+    let remoteFetched
+    const checkRemoteFetch = new Promise(fetchSucceeded => remoteFetched = fetchSucceeded)
+    checkRemoteFetch._delay = 5
+    exceptRulesFrom.localDB = { raw: getItem('exceptPrefixes'), _from: 'local database' }
+    exceptRulesFrom.localText = { raw: localExRulesText, _from: 'local text' }
+    exceptRulesFrom.onlineText = async function () {
+      await sleep(checkRemoteFetch._delay)
+      let aborted
+      const _abort = reason => void remoteFetched(aborted = reason || aborted)
+      if (!window.CORSViaGM) return _abort('was aborted because the plug-in "CORS-via-GM" was not enabled')
+      await window._CORSViaGM.inited
+      if (location.href.toLowerCase().includes('dev-local')) return remoteFetched('dev-local')
+      const expiredThreshold = devMode ? 10 : 100
+      const time = +compactTimeString()
+      const hast = await (dbUnavailable
+        ? undefined
+        : caches.match(URLForExRules))
+      const pageLastReload = await (dbUnavailable
+        ? time + 2 * expiredThreshold * Math.sign((devMode ? 0 : Math.random()) - 0.5)
+        : getItem('page-last-reload') || 0)
+      const maybeExpired =
+        (hast === undefined || hast.headers.get('--time') < time - expiredThreshold)
+        && pageLastReload < time - expiredThreshold
+      devMode && console.log({ maybeExpired, last: pageLastReload, curr: time })
+      setItem('page-last-reload', time)
+      if (!maybeExpired) return remoteFetched('cancel')
+      fadeLog('Fetching the latest exception prefix rules...')
+      const task = { time: Date.now(), name: 'Remote Fetch' }
+      let res, lastModified
+      let text = maybeExpired
+        ? res = URLForExRules.length
+          ? await fetch(URLForExRules[0])
+            .then(_ => (
+              fadeLog`${task.name} ${translateInterp(
+                `was completed in ${Date.now() - task.time} ms`, /[\d.]+/, '${ms}'
+              )}.`,
+              _
+            ))
+            .catch(() => {
+              URLForExRules.shift()
+              URLForExRules.length
+                ? fetch(URLForExRules[0])
+                : _abort('was aborted because there are no more exception prefix rules')
+            })
+          : _abort(translate`${'`URLForExRules`'} is empty, please add some sites.`)
+        : hast
+      if (aborted || !text) {
+        fadeLog('No more exception prefix rules.')
+        return { _from: exceptRulesFrom.onlineText._from }
+      }
+      text = htmlDecode(await text.clone().text())
+      const notRaw = text.indexOf('<custom-tag>')
+      if (~notRaw) {
+        text = text.substring(notRaw + '<custom-tag>'.length, text.indexOf('</custom-tag>', notRaw))
+      }
+      if (!dbUnavailable) {
+        if (res) {
+          lastModified = compactTimeString(res.headers.get('last-modified'), 0);
+          (await caches.open(cacheName)).put(
+            URLForExRules,
+            new Response(res.body, {
+              headers: new Headers({
+                '--time': time,
+                'last-modified': lastModified
+              })
+            })
+          )
+        }
+        (await caches.open(cacheName)).delete(URLForExRules)
+      }
+      return { raw: text, _from: exceptRulesFrom.onlineText._from, lastModified }
+    }()
+    exceptRulesFrom.onlineText._from = 'online text'
+    const trustLevel = 'fact > database > text > local > online'.split(' > ')
+    const calcFactor = v => (v._from || '').split(' ').reduce((p, c) => p * trustLevel.indexOf(c, 1), 1)
+    function mergeExRules(newER) {
+      let winER = window.exceptPrefixes
+      newER.raw._from = newER._from
+      const count = {}
+      const getCount = () => Object.keys(winER).length - 1
+      if (!winER) {
+        winER = window.exceptPrefixes = newER.raw
+        count.now = getCount()
+        devMode && console.log('Number of exception rules:', count.now, '(set up using ' + newER._from + ')')
+        return winER
+      }
+      if (newER.raw === winER) return winER
+      count.was = getCount()
+      const [f1, f2] = [winER, newER].map(calcFactor)
+      winER = window.exceptPrefixes = Object.assign(
+        ...
+        [winER, newER.raw]
+        [f1 < f2 ? 'reverse' : '']()
+      )
+      setItem('exceptPrefixes', winER)
+      count.now = getCount()
+      mergeExRules._countOfNew = count.now - count.was
+      devMode && console.log('Number of exception rules:', count.now, '(added', mergeExRules._countOfNew, 'from ' + newER._from + ')')
+      return winER
+    }
+    ;
+    window.urlLogFilterOut = /\.(jpg|mp4)$/
+    function initImgVidUrlsLTT() {
+      const _L = '_LTT', _S = 'SiteDN', _I = 'imgs', _V = 'vids'
+      const srcs = (srcType, o) => ({
+        [`${srcType}${_L}`]: o = new LoadTimeTracking,
+        [`${srcType}${_S}s`]: o = o.forUrls(urlSchema.urls[srcType]),
+        [`${srcType}${_S}`]: Object.keys(o).shift()
+      })
+      Object.assign(window, srcs(_I), srcs(_V), { imgSiteRandom: false })
+      Object.values(window[`${_V}${_L}`].siteRecs).forEach(siteRec =>
+        siteRec.hasNoSrcsForTheseIDs = new Set
+      )
+    }
+    let urlSchema_ID_regex
+    const urlSchema =
+    {
+      urls: {
+        imgs: [
+          'dmm.co.jp'
+        ]
+          .map(site => `https://pics.${site}/\${indexI?\`digital/\${videoS}\`:\`mono/movie/adult\`}/$\\{cID}/$\\{cID}\${indexS}.jpg`),
+        vids: [
+          `cc3001.dmm.co.jp`
+        ]
+          .map(site => `https://${site}/litevideo/freepv/\${cIDDir}_\${qualCode}_w.mp4`)
+      },
+      'check final ID': (ID, whichPart) => ID && (normID(ID).match(idRe[whichPart]) || [])[0],
+      'ID info': ID => ({ 'DVD ID': cFID(ID, 'p0'), 'Series Short Name': SSN(ID), 'Serial Number': cFID(ID, 'p2') }),
+      'ID regex': Object.assign(
+        urlSchema_ID_regex = /(?:([0-9]*[A-Z-]+[0-9]*) *(-) *([0-9]+[D-Z]?\b)|([A-Z0-9]+?)([- ]?)([0-9]+))/gi,
+        { p0: /.*-.*/, p1: /([A-Z0-9-]+)(?=-.+$)|^[A-Z0-9]+$/i, p2: /(?<=-)\d+/ }
+      ),
+      'ID regex pro plus': RegExp(`${urlSchema_ID_regex.source}(\\.\\.\\d+(?:(?:\\+\\+|--)\\d+)?)?`, urlSchema_ID_regex.flags),
+      'normalize ID': ID => ID && (
+        ID = String(ID),
+        ID.toUpperCase()
+          .replace(/^\d+$/, '')
+          .replace(idReP, '$1$4-$3$6$7')
+          .replace(/[^\dD-Z]+$/, '')
+          .replace(/\b(?<![+-]{2})\d+(?=(?:[D-Z]|(?:\.\.|\+\+|--).+)?$)/g, d => d.padStart(3, 0))
+          .replace(/-(?!-|\d+(?=(?:[D-Z]|\.{2}.*)?$))/g, '')
+      ),
+      'extract IDs': str => (str.match(idReP) || []).filter(Boolean).map(ID => normID(ID)),
+      'contract Series Short Name': ID => cFID(ID, 'p1'),
+      'Content ID rules': {
+        '': {
+          amateur: {
+            'find': /-/g,
+            'replace': ''
+          },
+          default: {
+            'find': /-0?(\d+)/,
+            'replace': (_, p1) => (
+              p1 = p1.padStart(5, 0),
+              p1.startsWith(0) ? p1 : (_pr.length < 3 ? 0 : '') + p1
+            )
+          },
+        },
+        default: {
+          'find': /-0?(\d+)/,
+          'replace': (_, p1) => p1
+        },
+        get video() { return this.default }
+      },
+      'convert to Content ID': ID => (
+        gen_ex(ID),
+        (_ex.length ? _ex : ['']).map(pr => (
+          _pr = pr,
+          (pr + ID).toLowerCase().replace(...Object.values(cIDRules[_ex.urlDir || 'default']))
+        ))
+      ),
+      'slugS': ({ posterSize = window.posterSize } = {}) => ({
+        videoS: _ex.urlDir || 'video',
+        indexS: index => index === 0
+          ? _ex.urlDir === 'amateur' ? 'jp' : posterSm(posterSize) ? 'ps' : 'pl'
+          : `jp-${String(index).padStart(_ex.urlDir === 'amateur' && 3, 0)}`
+      }),
+      slugS: ({ posterSize = window.posterSize } = {}) => ({
+        videoS: 'video',
+        indexS: index => index === 0
+          ? posterSm(posterSize) ? 'ps' : 'pl'
+          : `jp-${String(index)}`
+      }),
+      'img num per ID': 20 + 1,
+      'check non-existence of img': function (img) { return window.CORSViaGM ? this.byURL(img.src) : img.width < 100 }.bind({ byURL: async imgURL => +(await getHeaders(imgURL))['content-length'] < 4000 }),
+      pad: (cID, pNum) => cID.replace(/\d+$/, d => d.startsWith('00') ? d : String(+d).padStart(pNum, 0))
+    }
+    let _pr, _ex
+    const gen_ex = ID => _ex = window.exceptPrefixes[SSN(ID)] || []
+    const {
+      'urls': urlForm, 'check final ID': cFID, 'ID info': idInfo, 'ID regex': idRe, 'ID regex pro plus': idReP, 'contract Series Short Name': SSN,
+      'normalize ID': normID, 'extract IDs': extractIDs, 'Content ID rules': cIDRules, 'convert to Content ID': toCID,
+      'slugS': evalSlugs, 'img num per ID': pPerID, 'check non-existence of img': isImgPlac, pad: padCID
+    } = urlSchema
+    const posterSm = size => 'small'.includes(size)
+    window.posterSize = 'large'
+    function genImgUrls(ID, { cID, pref = genImgUrls.pref, pSize: posterSize, try1, from = 0, to = Infinity } = {}) {
+      !cID && gen_ex(ID)
+      let indexI
+      const { videoS, indexS: indexSS } = evalSlugs({ posterSize })
+      let imgUrls = Array(posterSm(posterSize) || try1 ? 1 : pPerID).fill().map(
+        (_, indexS) => (
+          indexI = indexS,
+          indexS = indexSS(indexS),
+          evalStr.call({ indexS, videoS, indexI },
+            typeof pref === 'function'
+              ? pref()
+              : typeof pref === 'string'
+                ? pref
+                : random(urlForm)
+          )
+        )
+      ).slice(from, to)
+      if (cID) imgUrls = imgUrls.map(evalStr.bind({ cID }))
+      return { imgUrls, ...!cID && { cIDs: toCID(ID) } }
+    }
+    function genImgUrl(ID, { cID, pref, pSize: posterSize = 'small' } = {}) {
+      return genImgUrls(ID, { cID, pref, pSize: posterSize, try1: 1 }).imgUrls.pop()
+    }
+    const prework = {
+      taskName: 'checkRemoteFetch',
+      rival: checkRemoteFetch,
+      log: (t, sig) =>
+        `${prework.taskName} ${(() => {
+          switch (sig) {
+            case 'cancel': return 'is not yet needed'
+            case 'abort': return `was ${sig}ed because there was no more source left`
+            case 'dev-local': return `is not needed because it is now ${sig}`
+            default: return sig || `will take more than ${t} seconds this time`
+          }
+        })()}.`,
+      doneAt: () => self.checkRemoteFetch.doneAt,
+      cLog: (_res, msg) => devMode && console.log(msg)
+    }
+    checkRemoteFetch.then(_ => {
+      self.checkRemoteFetch.doneAt = Date.now()
+      prework.log.check = _
+    })
+    self.checkRemoteFetch = {}
+    const _remoteFetched = Promise.race([checkRemoteFetch, timeoutIn(10, prework)])
+    const resolveID_ = (ID, i, arr) => resolveID(ID, i, arr.length)
+    const resolveIDs = IDs => (console.log(
+      `Start to fetch ${IDs.length} IDs, estimated time: ${(IDs.length / 2.7).toFixed(1)} seconds.`),
+      Promise.all(IDs.map(resolveID_))
+    )
+    const resolving = new Map
+    const serverErrs = [
+      ['Internal Server Error', 'error'],
+      ['{\n   "Error": "Invalid URI']
+    ]
+    window['series not included'] = []
+    async function resolveID(ID, i, len) {
+      if (!(Array.isArray(ID) || typeof ID === 'string')) return
+      if (Array.isArray(ID)) return resolveIDs(ID)
+      if (/[\s,]/.test(ID)) return resolveIDs(ID.trim().split(/[\s,]+/))
+      await _remoteFetched
+      const idInf = idInfo(ID), { 'Series Short Name': SSN, 'DVD ID': DID, 'Serial Number': SN } = idInf
+      const pct = len ? `(${((i + 1) / len * 100 || 100).toFixed(0)}%)` : ' '
+      if (window['series not included'].includes(SSN)) {
+        console.log(`‘${SSN}’ series is not included in FANZA (Inferred from what was just checked)`, pct)
+        return {}
+      }
+      let found, fromNetwork
+      if (resolving.has(SSN) && DID) {
+        await resolving.get(SSN).promise
+        if (found = window.exceptPrefixes[SSN] || window['series not included'].includes(SSN)) {
+          console.log(`Resolved the ID ‘${DID}’ (Inferred based on what was checked a moment ago)`, pct)
+          return {}
+        }
+      }
+      const matchRe = RegExp(
+        `<img src="//pics.dmm.co.jp/mono/movie/adult/(\\w*${SSN}${SN})/\\1pt.jpg" alt="([^"]+)">`, 'gi')
+      let text, proxyURL
+      found = window.exceptPrefixes[SSN]
+      if (!found) {
+        fromNetwork = true
+        if (!window.CORSViaGM) {
+          _promptAboutInstallGM('Unable to send a search request for the exception rule encountered.')
+          return {}
+        }
+        const makeP = () => resolving.get(SSN).promise = new Promise(res => resolving.get(SSN).res = res)
+        if (!resolving.has(SSN)) (resolving.set(SSN, {}), makeP())
+        const searchword = DID || SSN
+        const url = `https://www.dmm.co.jp/search/=/searchstr=${searchword}`
+        if (!len) console.log(`Querying ‘${searchword}’ from network...`)
+        found = [...(text = await (await
+          (proxyURL = fetch(url).catch(_ => resolving.delete(SSN)))
+        ).text()).matchAll(matchRe)]
+      }
+      let err
+      if (text && (err = serverErrs.find(([e]) => text.startsWith(e)))) {
+        resolving.delete(SSN)
+        proxyURL.reportUnusable && proxyURL.reportUnusable(err[1])
+        return 'try again'
+      }
+      const prefixes = found.length && [...new Set(found.map(fo => (fromNetwork ? (fo[1].match(RegExp('^(\\w*)' + SSN, 'i')) || [])[1] : fo)))]
+      let titles
+      if (fromNetwork) {
+        if (found.length) {
+          window.exceptPrefixes[SSN] = prefixes
+          setItem('exceptPrefixes', window.exceptPrefixes)
+          titles = found.map(fo => fo[2])
+        }
+        else if (DID) {
+          const checkSSN = await resolveID(SSN)
+          !checkSSN.founds.length && window['series not included'].push(SSN)
+        }
+        if (resolving.has(SSN) && DID) {
+          resolving.get(SSN).res()
+          resolving.delete(SSN)
+        }
+      }
+      found = {
+        ...DID ? { 'DVD ID': DID } : { 'Studio Short Name': SSN },
+        founds: found.map((fo, i) => ({
+          'Content ID': fromNetwork ? fo[1] : toCID(DID)[i],
+          prefix: prefixes[i],
+          ...titles ? { title: titles[i] } : {},
+        })),
+        ...fromNetwork ? {} : { fromCache: true }
+      }
+      return found
+    }
+    function resolveNotFounds(IDs) {
+      return resolveID(
+        typeof IDs === 'string'
+          ? [...new Map(IDs.trim().split(/[\s,]+/).map(ID => [SSN(ID), ID]))].map(v => v[1])
+          : IDs
+      )
+    }
+    function availableVidHosts(cID) {
+      if (typeof cID !== 'string') return
+      const found = vids_LTT.siteSort.find(([site]) =>
+        !vids_LTT.siteRecs[site].hasNoSrcsForTheseIDs.has(cID)
+      )
+      return found && vids_LTT.siteRecs[found[0]].main
+    }
+    function genVidUrls(cID, hostname) {
+      cID = padCID(cID, 3)
+      const cIDDir = [1, 3, Infinity, Infinity].map(end => cID.slice(0, end)).join('/')
+      return Object.fromEntries(
+        [['low', 'sm'], ['med', 'dm'], ['high', 'dmb']].map(
+          ([qual, qualCode]) => [qual, evalStr.call({ cIDDir, qualCode }, hostname)]
+        )
+      )
+    }
+    function genVidUrlsForTrial(cID) {
+      let hostname = availableVidHosts(cID)
+      if (!hostname) return
+      return [
+        ['', cID],
+        ['asSrcForTry', padCID(cID, 5)]
+      ]
+        .filter(([, CID], i, arr) => !arr.slice(0, i).some(([, _CID]) => CID === _CID))
+        .flatMap(
+          ([asSrcForTry, cID]) => (
+            Object.entries(genVidUrls(cID, hostname)).map(
+              ([quality, qualUrl]) => ({
+                ...asSrcForTry && { asSrcForTry: true }, quality, src: qualUrl
+              })
+            )
+          )
+        )
+    }
+    ;
+    (async () => {
+      const checkFromOnlineText = _from => _from.startsWith('online') && (remoteFetched(), !mergeExRules._countOfNew && fadeLog('No more exception prefix rules.'))
+      for await (let rule of Object.values(exceptRulesFrom)) {
+        try {
+          rule = await rule
+          rule && checkFromOnlineText(rule._from)
+          if (!(rule && rule.raw)) continue
+          if (rule.raw.constructor === Promise) rule.raw = await rule.raw
+          if (!rule.raw) continue
+          const {
+            raw,
+            _from,
+            lastModified = typeof raw === 'string'
+              ? raw.match(/(?<=(Updated on|last ?modified|Date|Time)(: ))[\d -:]{19}/gi)
+              : ''
+          } = rule
+          const finish = processedRaw => {
+            rule.raw = processedRaw
+            fadeLog(
+              translate`The rules have been imported from the ${_from}${lastModified ? translate` (${''}last updated at ${lastModified})` : ''}.`
+            )
+            mergeExRules(rule)
+          }
+          if (typeof raw === 'object') {
+            finish(raw)
+            continue
+          }
+          const { keysValsMap, keysValsPairs } = fampl(raw)
+          keysValsPairs.forEach(([, vals]) => (
+            vals.forEach((v, i) => (
+              v.startsWith('::') && (
+                delete vals[i],
+                vals.urlDir = v.replace('::', '')
+              )
+            )),
+            vals.splice(0, Infinity, ...vals.filter(v => v !== undefined)),
+            !vals.length && vals.push(''),
+            vals.studio = vals['#heading'], delete vals['#heading']
+          ))
+          finish(keysValsMap)
+          checkFromOnlineText(_from)
+        } catch (err) {
+          console.error({ err, html: '<em><code>exceptPrefixes</code></em> fetch failed.' })
+        }
+      }
+    })()
     self.translate = translate
+    let _loadedLangs, _loadingLangs
     function translate(word, toLang, { elem, node, fromDOM = true } = {}) {
       if (Array.isArray(arguments[0])) return interleave(
         arguments[0].map(translateDirectly),
@@ -3519,15 +4429,18 @@
       }
       else if (!word.trim()) return word
       if (!(toLang && typeof toLang === 'string')) toLang = arguments[1] = window._langs.chosen
-      if (!window._loadedLangs) window._loadedLangs = {}
-      if (!window._loadedLangs[toLang]) {
-        if (isLangEn(toLang)) return word
-        return (
-          window._loadingLangs ||
-          (
-            window._loadingLangs = loadElemFromUrl(`./localization/${toLang}.js`, { promise: true })
+      if (!_loadedLangs) _loadedLangs = window._loadedLangs = {}
+      if (!_loadedLangs[toLang]) {
+        return isLangEn(toLang) ? word :
+          _loadedLangs[`__loaded: ${toLang}`] ||
+          (_loadedLangs[`__loaded: ${toLang}`] =
+            (_loadingLangs ||
+              (_loadingLangs = loadElemFromUrl(`./localization/${toLang}.js`, { promise: true }))
+            ).then(() => {
+              _loadedLangs[`__loaded: ${toLang}`] = `(${toLang})`
+              translate(...arguments)
+            })
           )
-        ).then(() => translate(...arguments))
       }
       return _translate(word, toLang, { elem, node, fromDOM })
     }
@@ -3536,18 +4449,28 @@
     }
     function _translate(word, toLang, { elem, node, fromDOM } = {}) {
       if (typeof toLang !== 'string') return word
-      const result = __translate(word, toLang) || __translate(word.trim(), toLang)
+      const result =
+        __translate(word, toLang) ||
+        (brackets.left.test(word[0]) || brackets.right.test(word.at(-1))) &&
+        word.split(brackets.regex).map(s => __translate(s, toLang, { or: true })).join('')
       switch (true) {
         case typeof result === 'function': return result(elem || node && node.parentNode, { textNode: node, fromDOM })
         default: return result || word
       }
     }
-    function __translate(word, toLang) {
-      return window._loadedLangs[toLang][word]
-        || window._loadedLangs[toLang][word.toLowerCase()]
-        || window._loadedLangs[toLang][word.replace(/\s*\.$/, '')]
+    function __translate(word, toLang, { or } = {}) {
+      word = word.trim()
+      if (!word) return word
+      return _loadedLangs[toLang][word]
+        || _loadedLangs[toLang][word.toLowerCase()]
+        || or && word.split(/(?<=\w)(?=\s*\W+\s*$)/).map(str => _loadedLangs[toLang][str] || str).join('')
+        || _loadedLangs[toLang][word.replace(/\s*\W+\s*$/, '')]
     }
     function translateInterp(str = '', regex = /\d/, ir = '${d}', { toLang, feature = /\$\{[^}]+}/g } = {}) {
+      if (/\((?!\?)/.test(regex)) {
+        regex = RegExp(regex.source.replace(/^([^(]*?)\((?!\?)/, '(?<=$1)').replace(/\)([^)]*?)$/, '(?=$1)'))
+        return translateInterp(str, regex, ir, { toLang, feature })
+      }
       if (!Array.isArray(ir)) ir = [ir]
       const ir_c = []
       const matched = []
@@ -3600,7 +4523,7 @@
           ? $matched.forEach(([ir, p]) => replace(ir, p))
           : replace($$ir, $matched)
       })
-      return tran_str
+      return /(?<!\\)\${/.test(tran_str) ? eval('`' + tran_str + '`') : tran_str
     }
     RegExp._sliceParams = function (_arguments) {
       _arguments = Array.from(_arguments)
@@ -3631,24 +4554,27 @@
           : chosenLangs.find(item => langAttr(item).toLowerCase() === userLangExact)
       )
     }()
+    window.switchLang = switchLang
     async function switchLang(node, toLang, { forceAgain } = {}) {
       if (!node) return
+      if (typeof toLang === 'boolean') forceAgain = toLang
       if (!(toLang && typeof toLang === 'string')) toLang = window._langs.chosen
       switch (node.nodeType) {
         case Node.ELEMENT_NODE:
           await switchLang.forElemNode(node, toLang, { forceAgain })
-          node.shadowRoot && await switchLang.forEachNode(node.shadowRoot, toLang)
+          node.shadowRoot && await switchLang.forEachNode(node.shadowRoot, toLang, { forceAgain })
           break
         case Node.TEXT_NODE:
-          await switchLang.forTextNode(node, toLang)
+          await switchLang.forTextNode(node, toLang, { forceAgain })
       }
       return node
     }
     switchLang.forElemNode = async function (node, toLang, { forceAgain } = {}) {
       if (
-        node._isTranslating
+        !(node instanceof HTMLElement)
+        || node._isTranslating
         ||
-        ['br', 'meta', 'link', 'style', 'script', 'object', 'iframe', 'template', 'video', 'audio', 'html-comp'].includes(node.localName)
+        ['br', 'meta', 'link', 'style', 'script', 'kbd', 'object', 'iframe', 'template', 'video', 'audio', 'html-comp'].includes(node.localName)
         ||
         node.getAttribute('translate') === 'no' ||
         node.getAttribute('translate') !== 'always' && node.getAttribute('lang') === toLang && !forceAgain ||
@@ -3657,13 +4583,16 @@
       node._isTranslating = true
       if (node.hasAttribute('translate-merge')) {
         if (isLangEn(toLang)) {
-          if (node.hasAttribute('lang')) {
-            clearChildNodes(node)
-            node.append(...node._origChildNodes)
-            Array.prototype.forEach.call(node.children, el => {
-              el.removeAttribute('lang')
-              if (el._origHTML) el.innerHTML = el._origHTML
-            })
+          if (!isLangEn(node.getAttribute('lang'))) {
+            replaceSubtree(node)
+            function replaceSubtree(elem) {
+              elem._origChildNodes && replaceChildNodes(elem)
+              elem.removeAttribute('lang')
+              elem.childElementCount && Array.prototype.forEach.call(elem.children, elem => {
+                if (elem._origHTML) elem.innerHTML = elem._origHTML
+                replaceSubtree(elem)
+              })
+            }
           }
         }
         else {
@@ -3686,31 +4615,57 @@
               node.innerHTML = transRet; break
             case Array.isArray(transRet):
               const origChildNodes = [...node._origChildNodes]
-              clearChildNodes(node)
-              node.append(...transRet.map(tran => {
-                if (Array.isArray(tran) && typeof tran[0] === 'string') {
-                  const [_, tag, id] = tran[0].match(/(?<=^<)([^#>]+)#?([^>]*)/)
-                  let elem = origChildNodes.findIndex(cNode =>
-                    cNode.localName === tag && (!cNode.hasAttribute('translate-id') || cNode.getAttribute('translate-id') === id)
-                  )
-                  if (~elem) {
-                    [elem] = origChildNodes.splice(elem, 1)
-                    if (!(elem.getAttribute('translate') === 'no' || [false, 0].includes(tran[1]))) {
-                      if (typeof tran[1] === 'string') {
-                        elem._origHTML = elem.innerHTML
-                        elem.innerHTML = tran[1]
+              replaceChildNodes(node, ...tranTransRet(transRet, origChildNodes))
+              function tranTransRet(transDicVal, origChildNodes) {
+                const ret = tranTranTransRet(transDicVal)
+                return ret
+                function tranTranTransRet(dicVal, countInward = 0) {
+                  let ret = dicVal.map(dV => {
+                    if (Array.isArray(dV)) {
+                      if (dV.some(Array.isArray)) {
+                        return tranTranTransRet(dV, countInward + 1)
                       }
-                      else switchLang(elem, toLang)
+                      if (typeof dV[0] === 'string') {
+                        const [_, tag, id] = dV[0].match(/(?<=^<)([^#>]+)#?([^>]*)/)
+                        let elem = origChildNodes.findIndex(cNode =>
+                          cNode.localName === tag &&
+                          (!cNode.hasAttribute('translate-id') || cNode.getAttribute('translate-id') === id)
+                        )
+                        if (~elem) {
+                          [elem] = origChildNodes.splice(elem, 1)
+                          if (countInward) elem = elem.querySelector(`[translate-id=${id}]`)
+                          if (!(elem.getAttribute('translate') === 'no' || [false, 0].includes(dV[1]))) {
+                            if (typeof dV[1] === 'string') {
+                              elem._origHTML = elem.innerHTML
+                              elem.innerHTML = dV[1]
+                            }
+                            else switchLang(elem, toLang)
+                          }
+                          return elem
+                        }
+                      }
                     }
-                    return elem
+                    return dV
+                  })
+                  if (countInward) {
+                    const elemWithTransId = Array.isArray(ret) && ret.find(_ => typeof _ !== 'string' && _ instanceof Element)
+                    if (elemWithTransId) {
+                      const elem = getNthLevelParent(elemWithTransId, countInward)
+                      if (elem) {
+                        if (!elem._origChildNodes) elem._origChildNodes = [...elem.childNodes]
+                        replaceChildNodes(elem, ...ret)
+                        ret = elem
+                      }
+                    }
                   }
+                  return ret
                 }
-                return tran
-              }))
+              }
+              break
           }
         }
       }
-      else await switchLang.forEachNode(node, toLang)
+      else await switchLang.forEachNode(node, toLang, { forceAgain })
       if (node.childNodes.length) node.setAttribute('lang', toLang)
       if (isLangEn(toLang)) {
         if (
@@ -3760,12 +4715,16 @@
       return nodeRepresentations.join('')
     }
     switchLang.forAttrs = ['placeholder', 'text-content', 'text-content-end']
-    switchLang.forTextNode = async function (node, toLang) {
+    switchLang.forTextNode = async function (node, toLang, { forceAgain } = {}) {
+      if (!node) return
+      if (forceAgain) (['_lang', '_translatedBefore'].forEach(_ => delete node[_]))
       if (node._lang === toLang) return
       node._lang = toLang
       if (node.assignedSlot) node.assignedSlot.toLang = toLang
-      if (isLangEn(toLang) && node._translatedBefore)
-        return node.data = node._initText
+      if (isLangEn(toLang) && node._translatedBefore) {
+        node.data = node._initText
+        return
+      }
       if (!node._translatedBefore)
         Object.assign(node, { _translatedBefore: true, _initText: node.data })
       const newText = await translate(node._initText, toLang, { node })
@@ -3786,13 +4745,15 @@
         if (node.data !== newText) node.data = newText
       }
     }
-    switchLang.forEachNode = async function (node, toLang) {
-      for (const _node of node.childNodes) await switchLang(_node, toLang)
+    switchLang.forEachNode = async function (node, toLang, { forceAgain } = {}) {
+      for (const _node of node.childNodes) await switchLang(_node, toLang, { forceAgain })
     }
     const observerFor_switchLang = {
       observeList: new Set([document.body]),
+      addendumList: new Set(),
       ignoreList: [],
       addObserve(node) { this.observeList.add(node); this.observe(node) },
+      addendum(node) { this.addendumList.add(node); switchLang(node) },
       observe(node) { this.observer.observe(node, this.init) },
       observer: new MutationObserver(muts => {
         muts.forEach(mut => {
@@ -3864,8 +4825,6 @@
         addedNodes.forEach(node => !observerFor_switchLang.notTranslateByDefault(node) && switchLang(node))
       }
     }
-    addEventListener('load', () => !isLangEn(window._langs.chosen) && switchLang(document.head))
-    observerFor_switchLang.observeAll()
     window.switchLangOfWholePage = switchLangOfWholePage
     async function switchLangOfWholePage(toLang, again) {
       if (!again) {
@@ -3886,548 +4845,43 @@
           .sort((a, b) => a.getAttribute(attr) - b.getAttribute(attr))
       )
     }
-    function isLangEn(toLang = '') {
-      return toLang.startsWith('en')
+    function isLangEn(toLang) {
+      return typeof toLang === 'string' && toLang.startsWith('en')
     }
     const expletiveWords = new Set(['the'])
     function isExpletive(word) {
       return expletiveWords.has(word.trim().toLowerCase())
     }
     function hasSomeAttrs(node, attrs = [], val = '') {
+      if (!node) return
       const has = `${val ? 'get' : 'has'}Attribute`
       if (has === 'hasAttribute') val = true
       return attrs.some(attr => node[has](attr) === val)
     }
     ;
-    let getItem = key => op(o => o.
-      get(key)
-    )
-      , setItem = (key, value) => op(o => o.
-        put(value, key), 'readwrite'
-      )
-      , delItem = key => op(o => o.
-        delete(key), 'readwrite'
-      )
-      , _clearDB = () => op(o => o.
-        clear(), 'readwrite'
-      )
-      , clearDB = () => (console.log('🗑️ Local database cleared.'), _clearDB())
-      , storeName = ''
-      , rebuiltIDB = dbName => (
-        console.log('indexedDB will be rebuilt.'),
-        indexedDB.deleteDatabase(dbName), getIDB(dbName)
-      )
-      , onerror = e => { console.error(e.target.error); throw e.target.error }
-      , idb
-      , idbInit = (dbName = '') => idb = getIDB(dbName)
-      , idbUnavailable = () => {
-        const idbMethods = 'getItem, setItem, delItem, clearDB'.split(', ')
-        window._isBundled
-          ? eval(`[${idbMethods}] = Array(4).fill(noopChain)`)
-          : idbMethods.forEach(idbMethod => window[idbMethod] = noopChain)
-        idb = noopChain
-      }
-    const noopChain = genNoopChain()
-    function getIDB(dbName) {
-      return new Promise(res => (function () {
-        this.onupgradeneeded = () => (
-          this.result.createObjectStore(storeName),
-          console.log('indexedDB first time loaded.')
-        )
-        this.onsuccess = () => res(
-          this.result.objectStoreNames.contains(storeName)
-            ? window.idb = this.result
-            : rebuiltIDB(dbName)
-        )
-        this.onerror = onerror
-      }).call(indexedDB.open(dbName)))
-    }
-    async function getStore({ rwType = 'readonly' } = {}) {
-      return (await idb).transaction(storeName, rwType).objectStore(storeName)
-    }
-    async function op(call, rwType) {
-      call = call(await getStore({ rwType }))
-      return new Promise(res => {
-        call.onsuccess = () => res(call.result)
-        call.onerror = onerror
-      })
-    }
-    function genNoopChain() {
-      const _noopChain = () => noopChain
-      const retEmptyStr = () => ''
-      const noopChain = new Proxy(_noopChain, {
-        get(target, key) {
-          if (target.hasOwnProperty(key)) return target[key]
-          switch (key) {
-            case 'then': return undefined
-            case Symbol.toPrimitive: return retEmptyStr
-            default: return noopChain
-          }
-        }
-      })
-      return noopChain
-    }
-    ;
-    Object.assign(window, { getItem, setItem, delItem, clearDB })
-      ;
-    ;
-    if (navigator.serviceWorker) {
-      window.isFFPW = false
-      idbInit('JAVivid')
-    }
-    else if (!isChrome) {
-      window.isFFPW = true
-      idbUnavailable()
-    }
-    ;
-    const exceptRulesFrom = {}
-    let remoteFetched
-    const checkRemoteFetch = new Promise(fetchSucceeded => remoteFetched = fetchSucceeded)
-    exceptRulesFrom.localDB = { raw: getItem('exceptPrefixes'), _from: 'local database' }
-    exceptRulesFrom.localText = { raw: localExRulesText, _from: 'local text' }
-    exceptRulesFrom.onlineText = async function () {
-      await sleep(5)
-      let aborted
-      const _abort = reason => void remoteFetched(aborted = reason || aborted)
-      if (!window.CORSViaGM) return _abort('was aborted because the plug-in "CORS-via-GM" was not enabled')
-      await window._CORSViaGM.inited
-      if (location.href.toLowerCase().includes('dev-local')) return remoteFetched('dev-local')
-      const expiredThreshold = devMode ? 10 : 100
-      const time = +compactTimeString()
-      const hast = await (window.isFFPW
-        ? undefined
-        : caches.match(URLForExRules))
-      const pageLastReload = await (window.isFFPW
-        ? time + 2 * expiredThreshold * Math.sign(Math.random() - 0.5)
-        : getItem('page-last-reload') || 0)
-      const maybeExpired =
-        (hast === undefined || hast.headers.get('--time') < time - expiredThreshold)
-        && pageLastReload < time - expiredThreshold
-      console.log({ maybeExpired, last: pageLastReload, curr: time })
-      setItem('page-last-reload', time)
-      if (!maybeExpired) return remoteFetched('cancel')
-      fadeLog('Fetching the latest exception prefix rules...')
-      const task = { time: Date.now(), name: 'Remote Fetch' }
-      aborted = 'was aborted because there are no more exception prefix rules'
-      let res, lastModified
-      let text = maybeExpired
-        ? res = URLForExRules.length
-          ? await fetch(URLForExRules[0])
-            .then(_ => (
-              fadeLog`${task.name}${translateInterp(
-                ` was completed in ${Date.now() - task.time} ms`, /[\d.]+/, '${ms}'
-              )}.`,
-              _
-            ))
-            .catch(() => {
-              URLForExRules.shift()
-              URLForExRules.length
-                ? fetch(URLForExRules[0])
-                : _abort()
-            })
-          : _abort()
-        : hast
-      if (aborted) return fadeLog('No more exception prefix rules.')
-      text = htmlDecode(await text.clone().text())
-      const notRaw = text.indexOf('<custom-tag>')
-      if (~notRaw) {
-        text = text.substring(notRaw + '<custom-tag>'.length, text.indexOf('</custom-tag>', notRaw))
-      }
-      if (!window.isFFPW) {
-        if (res) {
-          lastModified = compactTimeString(res.headers.get('last-modified'), 0);
-          (await caches.open(cacheName)).put(
-            URLForExRules,
-            new Response(res.body, {
-              headers: new Headers({
-                '--time': time,
-                'last-modified': lastModified
-              })
-            })
-          )
-        }
-        (await caches.open(cacheName)).delete(URLForExRules)
-      }
-      return { raw: text, _from: 'online text', lastModified }
-    }()
-    const trustLevel = 'fact > database > text > local > online'.split(' > ')
-    const calcFactor = v => (v._from || '').split(' ').reduce((p, c) => p * trustLevel.indexOf(c, 1), 1)
-    function mergeExRules(newER) {
-      let winER = window.exceptPrefixes
-      newER.raw._from = newER._from
-      const count = {}
-      const getCount = () => Object.keys(winER).length - 1
-      if (!winER) {
-        winER = window.exceptPrefixes = newER.raw
-        count.now = getCount()
-        console.log('Number of exception rules:', count.now, '(set up using ' + newER._from + ')')
-        return winER
-      }
-      if (newER.raw === winER) return winER
-      count.was = getCount()
-      const [f1, f2] = [winER, newER].map(calcFactor)
-      winER = window.exceptPrefixes = Object.assign(
-        ...
-        [winER, newER.raw]
-        [f1 < f2 ? 'reverse' : '']()
-      )
-      setItem('exceptPrefixes', winER)
-      count.now = getCount()
-      console.log('Number of exception rules:', count.now, '(added', count.now - count.was, 'from ' + newER._from + ')')
-      return winER
-    }
-    ;
-    window.urlLogFilterOut = /\.(jpg|mp4)$/
-    function initImgVidUrlsLTT() {
-      const _L = '_LTT', _S = 'SiteDN', _I = 'imgs', _V = 'vids'
-      const srcs = (srcType, o) => ({
-        [`${srcType}${_L}`]: o = new LoadTimeTracking,
-        [`${srcType}${_S}s`]: o = o.forUrls(urlSchema.urls[srcType]),
-        [`${srcType}${_S}`]: Object.keys(o).shift()
-      })
-      Object.assign(window, srcs(_I), srcs(_V), { imgSiteRandom: false })
-      Object.values(window[`${_V}${_L}`].siteRecs).forEach(siteRec =>
-        siteRec.hasNoSrcsForTheseIDs = new Set
-      )
-    }
-    let urlSchema_ID_regex
-    const urlSchema =
-    {
-      urls: {
-        imgs: [
-          'r18.com',
-          'dmm.co.jp',
-          'avdmm.top'
-        ]
-          .map(site => `https://pics.${site}/digital/\${videoS}/$\\{cID}/$\\{cID}\${indexS}.jpg`),
-        vids: [
-          `awscc3001.r18.com`,
-          `cc3001.dmm.co.jp`
-        ]
-          .map(site => `https://${site}/litevideo/freepv/\${cIDDir}_\${qualCode}_w.mp4`)
+    const _api = window._api = {
+      async googleSearch(q = '', plain) {
+        const res = await (await fetch(`https://google.com/search?q=${q}`)).text()
+        return plain ? res : extractGoogleSearchResults(res)
       },
-      'check final ID': (ID, whichPart) => ID && (normID(ID).match(idRe[whichPart]) || [])[0],
-      'ID info': ID => ({ 'DVD ID': cFID(ID, 'p0'), 'Series Short Name': SSN(ID), 'Serial Number': cFID(ID, 'p2') }),
-      'ID regex': Object.assign(
-        urlSchema_ID_regex = /(?:([0-9]*[A-Z-]+[0-9]*) *(-) *([0-9]+[D-Z]?\b)|([A-Z0-9]+?)([- ]?)([0-9]+))/gi,
-        { p0: /.*-.*/, p1: /([A-Z0-9-]+)(?=-.+$)|^[A-Z0-9]+$/i, p2: /(?<=-)\d+/ }
-      ),
-      'ID regex pro plus': RegExp(`${urlSchema_ID_regex.source}(\\.\\.\\d+(?:(?:\\+\\+|--)\\d+)?)?`, urlSchema_ID_regex.flags),
-      'normalize ID': ID => ID && (
-        ID = String(ID),
-        ID.toUpperCase()
-          .replace(/^\d+$/, '')
-          .replace(idReP, '$1$4-$3$6$7')
-          .replace(/[^\dD-Z]+$/, '')
-          .replace(/\b(?<![+-]{2})\d+(?=(?:[D-Z]|(?:\.\.|\+\+|--).+)?$)/g, d => d.padStart(3, 0))
-          .replace(/-(?!-|\d+(?=(?:[D-Z]|\.{2}.*)?$))/g, '')
-      ),
-      'extract IDs': str => (str.match(idReP) || []).filter(Boolean).map(ID => normID(ID)),
-      'contract Series Short Name': ID => cFID(ID, 'p1'),
-      'Content ID rules': {
-        amateur: {
-          'find': /-/g,
-          'replace': ''
-        },
-        default: {
-          'find': /-0?(\d+)/,
-          'replace': (_, p1) => (
-            p1 = p1.padStart(5, 0),
-            p1.startsWith(0) ? p1 : (_pr.length < 3 ? 0 : '') + p1
-          )
-        },
-        get video() { return this.default }
+      async googleSearchPredictions(q = '') {
+        return JSON.parse(
+          (
+            (await (await fetch(`https://www.google.com/complete/search?q=${q}&client=gws-wiz`)).text()).match(/\[\[".*]]/)
+            || [0]
+          )[0]
+        ) || []
       },
-      'convert to Content ID': ID => (
-        gen_ex(ID),
-        (_ex.length ? _ex : ['']).map(pr => (
-          _pr = pr,
-          (pr + ID).toLowerCase().replace(...Object.values(cIDRules[_ex.urlDir || 'default']))
-        ))
-      ),
-      slugS: ({ posterSize = window.posterSize } = {}) => ({
-        videoS: _ex.urlDir || 'video',
-        indexS: index => index === 0
-          ? _ex.urlDir === 'amateur' ? 'jp' : posterSm(posterSize) ? 'ps' : 'pl'
-          : `jp-${String(index).padStart(_ex.urlDir === 'amateur' && 3, 0)}`
-      }),
-      'img num per ID': 20 + 1,
-      'placeholder size': 100
+      switchLang() {
+        observerFor_switchLang.disconnectAMoment()
+        return switchLang(...arguments)
+      }
     }
-    let _pr, _ex
-    const gen_ex = ID => _ex = window.exceptPrefixes[SSN(ID)] || []
-    const {
-      'urls': urlForm, 'check final ID': cFID, 'ID info': idInfo, 'ID regex': idRe, 'ID regex pro plus': idReP, 'contract Series Short Name': SSN,
-      'normalize ID': normID, 'extract IDs': extractIDs, 'Content ID rules': cIDRules, 'convert to Content ID': toCID,
-      'slugS': evalSlugs, 'img num per ID': pPerID, 'placeholder size': placSize
-    } = urlSchema
-    const posterSm = size => 'small'.includes(size)
-    window.posterSize = 'large'
-    function genImgUrls(ID, { cID, pref = genImgUrls.pref, pSize: posterSize, try1, from = 0, to = Infinity } = {}) {
-      !cID && gen_ex(ID)
-      const { videoS, indexS: indexSS } = evalSlugs({ posterSize })
-      let imgUrls = Array(posterSm(posterSize) || try1 ? 1 : pPerID).fill().map(
-        (_, indexS) => (
-          indexS = indexSS(indexS),
-          evalStr.call({ indexS, videoS },
-            typeof pref === 'function'
-              ? pref()
-              : typeof pref === 'string'
-                ? pref
-                : random(urlForm)
-          )
-        )
-      ).slice(from, to)
-      if (cID) imgUrls = imgUrls.map(evalStr.bind({ cID }))
-      return { imgUrls, ...!cID && { cIDs: toCID(ID) } }
-    }
-    function genImgUrl(ID, { cID, pref, pSize: posterSize = 'small' } = {}) {
-      return genImgUrls(ID, { cID, pref, pSize: posterSize, try1: 1 }).imgUrls.pop()
-    }
-    const prework = {
-      taskName: 'checkRemoteFetch',
-      rival: checkRemoteFetch,
-      log: (t, sig) =>
-        `${prework.taskName} ${(() => {
-          switch (sig) {
-            case 'cancel': return 'is not yet needed'
-            case 'abort': return `was ${sig}ed because there was no more source left`
-            case 'dev-local': return `is not needed because it is now ${sig}`
-            default: return sig || `will take more than ${t} seconds this time`
-          }
-        })()}.`,
-      doneAt: () => self.checkRemoteFetch.doneAt,
-    }
-    checkRemoteFetch.then(_ => {
-      prework.log.check = _
-      self.checkRemoteFetch.doneAt = Date.now()
-    })
-    self.checkRemoteFetch = {}
-    const _remoteFetched = Promise.race([checkRemoteFetch, timeoutIn(10, prework)])
-    const resolveID_ = (ID, i, arr) => resolveID(ID, i, arr.length)
-    const resolveIDs = IDs => (console.log(
-      `Start to fetch ${IDs.length} IDs, estimated time: ${(IDs.length / 2.7).toFixed(1)} seconds.`),
-      Promise.all(IDs.map(resolveID_))
+    const _api_noAbbr = new Set([_api.switchLang].map(v => v.name))
+    Object.values(window._api).forEach(v =>
+      !_api_noAbbr.has(v.name) &&
+      (window[`$${v.name.match(/^[a-z]|(?<=[a-z])[A-Z]/g).join('').toLowerCase()}`] = v)
     )
-    const resolving = new Map
-    const serverErrs = [
-      ['Internal Server Error', 'error'],
-      ['{\n   "Error": "Invalid URI']
-    ]
-    window['series not included'] = []
-    async function resolveID(ID, i, len) {
-      if (!(Array.isArray(ID) || typeof ID === 'string')) return
-      if (Array.isArray(ID)) return resolveIDs(ID)
-      if (/[\s,]/.test(ID)) return resolveIDs(ID.trim().split(/[\s,]+/))
-      await _remoteFetched
-      const idInf = idInfo(ID), { 'Series Short Name': SSN, 'DVD ID': DID } = idInf
-      const pct = len ? `(${((i + 1) / len * 100 || 100).toFixed(0)}%)` : ' '
-      if (window['series not included'].includes(SSN)) {
-        console.log(`‘${SSN}’ series is not included in R18.com (Inferred from what was just checked)`, pct)
-        return {}
-      }
-      let found, fromNetwork
-      if (resolving.has(SSN) && DID) {
-        await resolving.get(SSN).promise
-        if (found = window.exceptPrefixes[SSN] || window['series not included'].includes(SSN)) {
-          console.log(`Resolved the ID ‘${DID}’ (Inferred based on what was checked a moment ago)`, pct)
-          return {}
-        }
-      }
-      const matchRe = RegExp(
-        `<img alt="(${DID || `${SSN}-\\d+`})"[^>]+? data-original="https://pics.r18.com/digital/(video|amateur)/(\\w+)[\\s\\S]+?<dt>(.*)</dt>`, 'gi'
-      )
-      let text, proxyURL
-      found = window.exceptPrefixes[SSN]
-      if (!found) {
-        fromNetwork = true
-        if (!window.CORSViaGM) {
-          _promptAboutInstallGM('Unable to send a search request for the exception rule encountered. ')
-          return {}
-        }
-        const makeP = () => resolving.get(SSN).promise = new Promise(res => resolving.get(SSN).res = res)
-        if (!resolving.has(SSN)) (resolving.set(SSN, {}), makeP())
-        const searchword = DID || SSN
-        const url = `https://www.r18.com/common/search/searchword=${searchword}`
-        found = [...(text = await (await
-          (proxyURL = fetch(url).catch(_ => resolving.delete(SSN)))
-        ).text()).matchAll(matchRe)]
-      }
-      let err
-      if (text && (err = serverErrs.find(([e]) => text.startsWith(e)))) {
-        resolving.delete(SSN)
-        proxyURL.reportUnusable(err[1])
-        return 'try again'
-      }
-      const prefixes = found.length && [...new Set(found.map(fo => (fromNetwork ? (fo[3].match(RegExp('^(\\w*)' + SSN, 'i')) || [])[1] : fo)))]
-      console.log(`Resolved the ${DID ? `ID ‘${DID}’` : `SSN ‘${SSN}’`}`, pct, prefixes ? { prefixes } : ' ')
-      let titles
-      if (fromNetwork) {
-        if (found.length) {
-          window.exceptPrefixes[SSN] = prefixes
-          setItem('exceptPrefixes', window.exceptPrefixes)
-          titles = found.map(fo => fo[4])
-        }
-        else if (DID) {
-          const checkSSN = await resolveID(SSN)
-          !checkSSN.founds.length && window['series not included'].push(SSN)
-        }
-        if (resolving.has(SSN) && DID) {
-          resolving.get(SSN).res()
-          resolving.delete(SSN)
-        }
-      }
-      found = {
-        ...DID ? { 'DVD ID': DID } : { 'Studio Short Name': SSN },
-        founds: found.map((fo, i) => ({
-          'Content ID': fromNetwork ? fo[3] : toCID(DID)[i],
-          prefix: prefixes[i],
-          genre: fromNetwork ? fo[2] : found.urlDir || 'video',
-          title: titles[i],
-          ...DID ? {} : { 'DVD ID': fo[1] }
-        })),
-        ...fromNetwork ? {} : { fromCache: true }
-      }
-      return found
-    }
-    function resolveNotFounds(IDs) {
-      return resolveID(
-        typeof IDs === 'string'
-          ? [...new Map(IDs.trim().split(/[\s,]+/).map(ID => [SSN(ID), ID]))].map(v => v[1])
-          : IDs
-      )
-    }
-    function availableVidHosts(cID) {
-      if (typeof cID !== 'string') return
-      const found = vids_LTT.siteSort.find(([site]) =>
-        !vids_LTT.siteRecs[site].hasNoSrcsForTheseIDs.has(cID)
-      )
-      return found && vids_LTT.siteRecs[found[0]].main
-    }
-    function genVidUrls(cID, hostname) {
-      cID = cID.replace(/\d+$/, d => d.startsWith('00') ? d : String(+d).padStart(3, 0))
-      const cIDDir = [1, 3, Infinity, Infinity].map(end => cID.slice(0, end)).join('/')
-      return Object.fromEntries(
-        [['low', 'sm'], ['med', 'dm'], ['high', 'dmb']].map(
-          ([qual, qualCode]) => [qual, evalStr.call({ cIDDir, qualCode }, hostname)]
-        )
-      )
-    }
-    function genVidUrlsForTrial(cID) {
-      let hostname = availableVidHosts(cID)
-      if (!hostname) return
-      return [
-        ['', cID],
-        ['asSrcForTry', cID.replace(/0+(?!0*$)/, '')]
-      ].flatMap(
-        ([asSrcForTry, cID]) => (
-          Object.entries(genVidUrls(cID, hostname)).map(
-            ([quality, qualUrl]) => ({
-              ...asSrcForTry && { asSrcForTry: true }, quality, src: qualUrl
-            })
-          )
-        )
-      )
-    }
-    ;
-    (async () => {
-      for await (let rule of Object.values(exceptRulesFrom)) {
-        try {
-          rule = await rule
-          if (!rule) continue
-          if (rule.raw.constructor === Promise) rule.raw = await rule.raw
-          if (!rule.raw) continue
-          const {
-            raw,
-            _from,
-            lastModified = typeof raw === 'string'
-              ? raw.match(/(?<=(Updated on|last ?modified|Date|Time)(: ))[\d -:]{19}/gi)
-              : ''
-          } = rule
-          const finish = processedRaw => {
-            rule.raw = processedRaw
-            fadeLog(
-              translate`The rules have been imported from the ${_from}` +
-              translate`${lastModified ? translate` (${''}last updated at ${lastModified})` : ''}.`
-            )
-            mergeExRules(rule)
-          }
-          if (typeof raw === 'object') {
-            finish(raw)
-            continue
-          }
-          const { keysValsMap, keysValsPairs } = fampl(raw)
-          keysValsPairs.forEach(([, vals]) => (
-            vals.forEach((v, i) => (
-              v.startsWith('::') && (
-                delete vals[i],
-                vals.urlDir = v.replace('::', '')
-              )
-            )),
-            vals.splice(0, Infinity, ...vals.filter(v => v !== undefined)),
-            !vals.length && vals.push(''),
-            vals.studio = vals['#heading'], delete vals['#heading']
-          ))
-          _from.startsWith('online') && remoteFetched(keysValsMap)
-          finish(keysValsMap)
-        } catch (err) {
-          console.error({ err, html: '<em><code>exceptPrefixes</code></em> fetch failed.' })
-        }
-      }
-    })()
-    addEventListener('DOMContentLoaded', () => genDictForAutocomplete(
-      'JS-Keywords', `
-null
-undefined
-true
-false
-delete
-function*
-in
-of
-instanceof
-new
-new.target
-super
-this
-typeof
-void
-yield
-yield*
-async
-await
-then
-break
-class
-const
-continue
-debugger
-empty
-for
-for await ( of ) {\\n}
-for ( in ) {\\n}
-for ( of ) {\\n}
-function
-function*
-if () {\\n} else {\\n}
-if
-else
-import
-import.meta
-let
-return
-switch
-throw
-try {\\n} catch (e) {\\n}
-try
-catch
-while () {\\n}
-while
-do {\\n} while ()
-do
-extends
-static
-`), { once: true })
     const _console = document.getElementById('_console')
     function evalFencedJSCode(code) {
       if (!code.trim()) return
@@ -4469,7 +4923,10 @@ static
         default: reason = 'undefErr'
       }
       reason === 'undefErr'
-        ? _console.log(_errInf && (_errInf.html || _errInf.message || _errInf) || ['Error:', ...errInf.map(v => !v || v.name || String(v))].join(' '))
+        ? (
+          _console._options.setOnce('err'),
+          _console.log(_errInf && (_errInf.html || _errInf.message || _errInf) || ['Error:', ...errInf.map(v => !v || v.name || String(v))].join(' '))
+        )
         : document.body.insertAdjacentHTML('afterbegin', `<i-🚨 slot='${reason}'>${errInf}</i-🚨>`)
       let a = [_errInf && (_errInf.err || _errInf.message || _errInf)].filter(Boolean)
       error(...a.length ? a : errInf)
@@ -4501,7 +4958,7 @@ static
         argListConverted = true
       }
       const infoBlock = document.createElement('div')
-      infoBlock.classList.add('border-bottom-short')
+      infoBlock.classList.add('border-bottom-short', _console._options.err && 'err')
       infoBlock.setAttribute('info-block', '')
       infoBlock.setAttribute('translate', _console._options.translate ? 'yes' : 'no')
       infoBlock.insertAdjacentHTML('afterbegin', `
@@ -4516,6 +4973,8 @@ static
   `)
       const representInText = _console._options.text || _console._options.formatInText
       const info = infoBlock.querySelector('[info]')
+      const jsonCTypes = new Set('Object Array'.split(' '))
+      window.temp0 = evaledVal
       info[`insertAdjacent${representInText ? 'Text' : 'HTML'}`]('afterbegin',
         `${_console._options.formatInJSON
           ? JSON.stringify(evaledVal, null, 2)
@@ -4524,7 +4983,13 @@ static
               ? evaledVal
               : $str(evaledVal, strPad((qBox._value.match(/(?<=```.*```[\s.]*str)\(([^)]*)\)/) || [])[1]))
             : Array.isArray(evaledVal)
-              ? argListConverted ? `[${evaledVal.map(JSON.stringify).join(', ')}]` : evaledVal.map(JSON.stringify).join(' ')
+              ? argListConverted
+                ? `[ ${evaledVal.map(v =>
+                  jsonCTypes.has(Object.prototype.toString.call(v).slice(8, -1))
+                    ? JSON.stringify(v, null, 2)
+                    : v && v.toString && v.toString() || v
+                ).join(', ')} ]`
+                : evaledVal.map(JSON.stringify).join(' ')
               : typeof evaledVal === 'function' && evaledVal.hasOwnProperty('description')
                 ? evaledVal.description
                 : String(evaledVal) || '""'
@@ -4557,8 +5022,10 @@ static
           setTimeout(() => info.innerHTML = '')
           infoBlock.classList.add('editable')
           infoBlock.setAttribute('input', '')
+          const clrBtnTip = '\'msg(translate("[Button] Clear all corresponding outputs"),"clrBtn")\''
           infoBlock.insertAdjacentHTML('beforeend', `
         ${_console.querySelector('[input]>[setting-btn]') ? '' : '<span setting-btn class=cmd-per-end onclick=\'clickOut("Code_Editor_Area")\'></span>'}
+        <span class='cmd-per-end right clear-output' onclick=$clear('on'+event.type,this.closest('[input]')) oncontextmenu=${clrBtnTip} onmouseover=${clrBtnTip}>ⓧ</span>
         <div class=line-num></div>
         <header><span>${info.id = `input${ioBlockCount.input}`}</span></header>
         <div outputs></div>
@@ -4575,7 +5042,7 @@ static
           })
           info.eval = async (input = info.innerText) => {
             const evaled = await evalFencedJSCode(input)
-            const endOfInput = (input.match(/(?<=\/\/\.).*$/) || [''])[0].trimRight()
+            const endOfInput = (input.match(/(?<=\/\/\.?)[^.].*$/) || [''])[0].trimRight()
             if (!noReturn) {
               _console._options.setOnce({
                 formatInJSON: endOfInput === 'JSON',
@@ -4598,6 +5065,9 @@ static
             _ptr: {
               value: 0,
               writable: true
+            },
+            isPtrEnd: {
+              get() { return this.ptr === this.length - 1 }
             }
           })
           info._updateLnNum = () => updateLnNum(lnNumDiv, info, infoBlock)
@@ -4608,9 +5078,10 @@ static
               _lastPressedKey.time = e.timeStamp
             })
             if (e.ctrlKey) {
-              if (['y', 'z'].includes(e.key)) {
+              const key = e.key.toLowerCase()
+              if (['y', 'z'].includes(key)) {
                 const ptr = info._inputHistory.ptr
-                info._inputHistory.ptr += e.key === 'z' ? (recordInputHistory(info), -1) : 1
+                info._inputHistory.ptr += !e.shiftKey && key === 'z' ? (recordInputHistory(info), -1) : 1
                 if (ptr === info._inputHistory.ptr) return
                 reputCaret(info)
                 e.preventDefault()
@@ -4622,11 +5093,12 @@ static
                 e.preventDefault()
                 const range = sel.getRangeAt(0)
                 const frag = range.extractContents()
+                let isBQ
                 switch (true) {
-                  case brackets.left.includes(e.key):
+                  case isBQ = brackets.left.includes(e.key):
                     frag.prepend(e.key)
                     frag.append(brackets.pair(e.key)); break
-                  case quotes.includes(e.key):
+                  case isBQ = quotes.includes(e.key):
                     frag.prepend(e.key)
                     frag.append(e.key); break
                   default:
@@ -4640,7 +5112,16 @@ static
                 range.commonAncestorContainer.normalize()
                 _recordInputHistory()
                 if (e.key === 'Tab') return
-                if (range.startContainer === range.endContainer && range.endContainer.nodeType === Node.TEXT_NODE) {
+                if (isBQ && sel.anchorNode === sel.focusNode) {
+                  if (sel.anchorNode.nodeName !== '#text') {
+                    sel.setBaseAndExtent(sel.anchorNode.firstChild, 1, sel.focusNode.firstChild, sel.focusNode.firstChild.data.length - 1)
+                  }
+                  else {
+                    const [s, e] = [sel.anchorOffset, sel.focusOffset].sort((a, b) => a - b)
+                    sel.setBaseAndExtent(sel.anchorNode, s + 1, sel.focusNode, e - 1)
+                  }
+                }
+                else if (range.startContainer === range.endContainer && range.endContainer.nodeType === Node.TEXT_NODE) {
                   sel.setBaseAndExtent(range.startContainer, range.startOffset + 1, range.endContainer, range.endOffset - 1)
                 }
               }
@@ -4649,7 +5130,7 @@ static
                   case 'Home':
                     if (e.shiftKey && !sel._getCaretChars()[0]) {
                       e.preventDefault()
-                      sel._setFocusOffset(sel.focusOffset + sel._nextNonBlankNodeOffset.forthOffset)
+                      sel._setFocusOffset(sel.focusOffset + sel._nextNonBlankCharNode.forthOffset)
                     }
                     break
                   case 'Enter':
@@ -4662,7 +5143,8 @@ static
               const [prevChar3, prevChar2, prevChar, nextChar, nextChar2] = sel._getCaretChars(3)
               const prevCharIsOpen =
                 brackets.left.test(prevChar) ||
-                brackets.left.test(sel.focusNode.previousSibling && sel.focusNode.previousSibling.textContent)
+                brackets.left.test(sel.focusNode.previousSibling && sel.focusNode.previousSibling.textContent) ||
+                brackets.left.test(sel._lastNonBlankCharNodeInline.lastNonBlankChar)
               const prevCharIsClosed = !prevCharIsOpen && (
                 prevChar === ',' ||
                 brackets.right.test(prevChar) ||
@@ -4703,7 +5185,7 @@ static
                       else {
                         replaceSelectedText(indentedText)
                         sel._cleanRange()
-                        if (brackets.right.test(sel._nextNonBlankNodeOffset.nextNonBlankChar)) {
+                        if (nextChar !== '\n' && brackets.right.test(sel._nextNonBlankCharNode.nextNonBlankChar)) {
                           replaceSelectedText(indent('\n', 0, prevCharIsOpen || !(prevCharsArePaired && brackets.left.test(prevChar3))))
                           sel._cleanRange('Start')
                         }
@@ -4740,13 +5222,17 @@ static
                 else {
                   ac._clearPrevious()
                   if (e.repeat && !['Shift', 'ArrowLeft', 'ArrowRight'].includes(e.key)) ac._remove()
-                  else switch (e.key) {
+                  else if (!e.ctrlKey) switch (e.key) {
+                    case ' ':
+                      let { lastNonBlankSeq: newWord } = sel._lastNonBlankSequence
+                      if (ac._wordSet.custom.includes(newWord)) ac._remove()
+                      else { (newWord = tryMatch(newWord, /\w+/)) && ac._wordSet.custom.push(newWord) } break
                     case '.':
                       ac.autocomplete(); break
                     case 'Control':
                       ac.isConnected
                         ? ac._remove()
-                        : _lastPressedKey.key.endsWith(e.key)
+                        : _lastPressedKey.key && _lastPressedKey.key.endsWith(e.key)
                         && e.timeStamp - _lastPressedKey.time <= delayOfDoubleHit
                         && ac.autocomplete(); break
                     case 'ArrowLeft': case 'ArrowRight':
@@ -4754,66 +5240,100 @@ static
                     case 'Home':
                       if (['\n', undefined].includes(prevChar) && boundaryChars.blank.test(nextChar)) {
                         e.preventDefault()
-                        const { forthOffset } = sel._nextNonBlankNodeOffset
+                        const { forthOffset } = sel._nextNonBlankCharNodeInline
                         sel._moveCaret(forthOffset)
-                        break
                       }
-                    default: if (!['Shift', 'CapsLock'].includes(e.key)) e.key.length === 1 ? ac.autocomplete() : ac._remove()
+                      break
+                    case 'End':
+                      if (['\n', undefined].includes(nextChar) && boundaryChars.blank.test(prevChar)) {
+                        e.preventDefault()
+                        const { backOffset } = sel._lastNonBlankCharNodeInline
+                        sel._moveCaret(backOffset + 1)
+                      }
+                      break
+                    default:
+                      if (!['Shift', 'CapsLock'].includes(e.key)) {
+                        e.key.length === 1
+                          ? ac.autocomplete()
+                          : ac._remove()
+                      }
                   }
                 }
               }
             }
           })
           info.addEventListener('keyup', async e => {
+            if (e.ctrlKey) { sel.type === 'None' && refocus(info) }
+            if (!sel._charBeforeCaret.trim()) return ac._remove()
             if (e.key === 'Enter' && e.ctrlKey) return
             if (e.key.startsWith('Arrow')) {
               recordLastSelection(info)
               ac._eager ? ac.autocomplete() : focusingWord.wordChanged && !focusingWord.propWord && ac._remove()
             }
             else {
-              if (sel.isCollapsed)
-                if (ac._eager
-                  || 65 <= e.keyCode && e.keyCode <= 90
+              if (sel.isCollapsed) {
+                if (
+                  65 <= e.keyCode && e.keyCode <= 90
                   || 96 <= e.keyCode && e.keyCode <= 105
-                  || ['Backspace', 'Delete'].includes(e.key)
                   || ac._keysToCapture.includes(e.key)
+                  || ac._eager
+                  || ['Backspace', 'Delete'].includes(e.key)
+                  || isChromeMobile && e.key === 'Unidentified'
                 ) ac.autocomplete()
+                if (!e.ctrlKey && (e.keyCode === 13 || 32 <= e.keyCode <= 126)) delFrontInputHistory(info)
+              }
             }
           })
           setTimeout(() => {
             info.focus()
             recordInputHistory.obsr(info)
           })
-          !isLangEn(_userLang) && setTimeout(() => info.prepend(' '))
+          !isLangEn(_userLang) && setTimeout(() => { info.prepend(' '); info.innerText = '' })
           info.addEventListener('focus', () => {
             if (ac.isConnected) return
             observerFor_switchLang.disconnect()
-            setTimeout(focusToLastSelection, 0, info)
+            refocus(info)
           })
-          info.addEventListener('focusout', () => {
+          info.addEventListener('focusout', e => {
             if (ac._focusing) return
             observerFor_switchLang.observeAll()
-            ac._remove()
+            if (!(
+              isTouchDevice && (isFirefox ? ac.contains(e.explicitOriginalTarget) : true)
+            )) ac._remove()
           })
           info.addEventListener('pointerdown', () => {
             info.addEventListener('pointerup', () => recordLastSelection(info), { once: true })
           })
           initForStyleSmoothly(info, 'height')
+          header.head = header.firstElementChild
+          header.head.Bak = header.head.innerText
           header.addEventListener('click', () => {
             if (sel.type !== 'Caret') {
               header.setAttribute('selected', '')
-              selectWholeText(header.firstElementChild)
+              selectWholeText(header.head)
               return
             }
             if (header.hasAttribute('selected')) {
               header.removeAttribute('selected')
               return
             }
-            const height = info.clientHeight ? 0 : info.style.getPropertyValue('--div-height')
-            updateStyleSmoothly(info, { height })
-            infoBlock.style.setProperty('--line-num-border-right', height ? '' : 'none')
-            info.style.outline = height ? '' : '1px solid'
-            info.setAttribute('collapsed', height ? '' : true)
+            if (header.head.contentEditable !== 'true') {
+              const height = info.clientHeight ? 0 : info.style.getPropertyValue('--expanded-height')
+              updateStyleSmoothly(info, { height })
+              infoBlock.style.setProperty('--line-num-border-right', height ? '' : 'none')
+              info.style.outline = height ? '' : '1px solid'
+              info.setAttribute('collapsed', height ? '' : true)
+            }
+          })
+          header.addEventListener('dblclick', () => {
+            header.head.contentEditable = true
+            header.head.bak = header.head.innerText
+          })
+          header.head.addEventListener('keydown', ({ key }) => key === 'Enter' && setTimeout(() => header.head.blur()))
+          header.head.addEventListener('focusout', () => {
+            header.head.contentEditable = 'inherit'
+            $id(header.head.bak).id = header.head.innerText =
+              header.head.innerText.trim().replace(/\s/g, '_') || header.head.Bak
           })
         }
         else {
@@ -4834,13 +5354,13 @@ static
       delete qBox._value
       try {
         _console._options.prependTo.prepend(infoBlock)
-      } catch (error) {
+      } catch (e) {
         (_console._options.appendTo || _console).appendChild(infoBlock)
       }
-      if (inCodeMode && _console.lastChild)
+      if (inCodeMode && _console.lastChild && !_console._options.noReturn)
         isInView(_console)
           ? infoBlock.scrollIntoView({ block: 'nearest' })
-          : window.tosta && new tosta(infoBlock.firstElementChild.innerText, undefined, { className: 'code' })
+          : window.Tosta && new Tosta(infoBlock.firstElementChild.innerText, { className: 'code' })
       _console._options.clear()
       return infoBlock
     }
@@ -4865,14 +5385,18 @@ static
       })
     }
     _console._options.clear = () => 'text formatInText not_count'.split(' ').forEach(opt => delete _console._options[opt])
-    _console.log_spec = function (optionsSet) {
+    _console.logEery = function (optionsSet) {
       _console._options.setOnce(optionsSet)
       return _console.log(...Array.prototype.slice.call(arguments, 1))
     }
-    _console.logAndTranslate = _console.log_spec.bind('', 'translate')
-    _console.logWithoutCount = _console.log_spec.bind('', 'not_count')
-    _console.logTrifle = _console.log_spec.bind('', ['translate', 'not_count'])
+    _console.logAndTranslate = _console.logEery.bind('', 'translate')
+    _console.logWithoutCount = _console.logEery.bind('', 'not_count')
+    _console.logTrifle = _console.logEery.bind('', ['translate', 'not_count'])
     _console.logFromTop = function () {
+      const str = arguments.toString()
+      if (_console.logFromTop.Set.has(str)) return
+      _console.logFromTop.Set.add(str)
+      setTimeout(() => _console.logFromTop.Set.delete(str))
       _console._options.setOnce('translate', 'not_count')
       const infoBlock = _console.log(...arguments)
       infoBlock.className = 'info-top unfold-from-top'
@@ -4886,13 +5410,20 @@ static
       }
       return infoBlock
     }
+    _console.logFromTop.Set = new Set
     const fadeLog = (...info) => devMode && fadeOut(_console.logWithoutCount(translate(...info)))
-    function reputCaret(info = sel.focusNode && sel.focusNode._closest('[info]')) {
+    function refocus(info) {
+      setTimeout(focusToLastSelection, 0, info)
+    }
+    function reputCaret(info = getEditing()) {
       focusToLastCaretPos(rewriteInput(info))
     }
+    function getEditing() {
+      return sel.focusNode && sel.focusNode._closest('[info]')
+    }
     function updateLnNum(lnNumDiv) {
-      clearTimeout(lnNumDiv._tIDOf_updateLnNum)
-      lnNumDiv._tIDOf_updateLnNum = setTimeout(_updateLnNum, delayOfInput / 2, ...arguments)
+      clearTimeout(lnNumDiv._tid_updateLnNum)
+      lnNumDiv._tid_updateLnNum = setTimeout(_updateLnNum, delayOfInput / 2, ...arguments)
     }
     function _updateLnNum(lnNumDiv, info, infoBlock) {
       lnNumDiv.innerHTML = '<div></div>'.repeat(Math.max(0, (info.innerText.match(/\n/g) || []).length))
@@ -4900,23 +5431,23 @@ static
       info.style.left = lnNumDivWidth
       infoBlock.style.setProperty('--pencil-width', lnNumDivWidth)
     }
-    function recordInputHistory(info = sel.focusNode && sel.focusNode._closest('[info]')) {
+    function recordInputHistory(info = getEditing()) {
       if (!(info = info._closest('[info]'))) return
       if (_lastPressedKey.key !== 'Ctrl Enter') recordLastSelection(info)
-      clearTimeout(info._tIDOf_recordInputHistory)
-      info._tIDOf_recordInputHistory = setTimeout(_recordInputHistory, delayOfRecord, info)
+      clearTimeout(info._tid_recordInputHistory)
+      info._tid_recordInputHistory = setTimeout(_recordInputHistory, delayOfRecord, info)
     }
-    function _recordInputHistory(info = sel.focusNode && sel.focusNode._closest('[info]')) {
+    function _recordInputHistory(info = getEditing()) {
       if (sel.type === 'None') return
-      if (!info.isConnected || !(info = info._closest('[info]'))) return
+      if (!info || !info.isConnected || !(info = info._closest('[info]'))) return
       info.normalize()
-      if (info.innerText === info._inputHistory[info._inputHistory._ptr][0]) {
-        info._inputHistory[info._inputHistory._ptr][1] = getLnCol()
+      if (info.innerText === info._inputHistory[info._inputHistory.ptr][0]) {
+        info._inputHistory[info._inputHistory.ptr][1] = getLnCol()
         return
       }
       info._inputHistory.push([info.innerText, getLnCol()])
-      ++info._inputHistory._ptr
-      info._inputHistory.splice(info._inputHistory._ptr + 1)
+      ++info._inputHistory.ptr
+      delFrontInputHistory(info)
       info._updateLnNum()
     }
     recordInputHistory._obsr = new MutationObserver(([m]) => {
@@ -4933,6 +5464,10 @@ static
     })
     recordInputHistory._obsrInit = { childList: true, characterData: true, subtree: true, attributeFilter: ['id'] }
     recordInputHistory.obsr = info => recordInputHistory._obsr.observe(info, recordInputHistory._obsrInit)
+    function delFrontInputHistory(info) {
+      if (info._inputHistory.isPtrEnd) return
+      info._inputHistory.splice(info._inputHistory._ptr + 1)
+    }
     function getLnCol() {
       return [Math.max(1, getLnNum()), getCol()]
     }
@@ -4958,7 +5493,7 @@ static
       }
       return sel.focusNode.data.substring(0, sel.focusOffset).match(/(?<=\n|^).*$/)[0].length + 1
     }
-    function rewriteInput(info = sel.focusNode && sel.focusNode._closest('[info]')) {
+    function rewriteInput(info = getEditing()) {
       const [text, [ln, col]] = info._inputHistory[info._inputHistory.ptr]
       let offset = 0, reg = /^/gm, arr, lineCount = 0
       while (arr = reg.exec(text)) {
@@ -4971,7 +5506,7 @@ static
       flatInput(info, text)
       return info
     }
-    function flatInput(info = sel.focusNode && sel.focusNode._closest('[info]'), text = info && info.innerText) {
+    function flatInput(info = getEditing(), text = info && info.innerText) {
       if (!info) return
       info.textContent = text
     }
@@ -4997,7 +5532,7 @@ static
       } catch (e) { }
     }
     window.ac = html`<div class='code autocomplete' contenteditable=false translate=no></div>`
-    ac._eager = false
+    ac._eager = isChromeMobile || false
     ac._keysToCapture = '$ _ \\ ( )'.split(' ')
     ac._dictSet = {}
     ac._wordSet = {
@@ -5029,7 +5564,7 @@ static
       wordChosen = wordChosen.textContent
       --ac._wordFreq[wordChosen]
       const acText = eval('`' + wordChosen + '`')
-      sel.setBaseAndExtent(focusNodeFallback(), offsetFallback(focusingWord.startOffset), focusNodeFallback(), offsetFallback(focusingWord.endOffset))
+      !focusingWord.isDot && sel.setBaseAndExtent(focusNodeFallback(), offsetFallback(focusingWord.startOffset), focusNodeFallback(), offsetFallback(focusingWord.endOffset))
       const newNode = replaceSelectedText(indent(acText))
       acText.endsWith('()') ? sel.collapse(newNode, newNode.data.length - 1) : sel._cleanRange()
       _recordInputHistory()
@@ -5044,8 +5579,20 @@ static
     })
     ac.addEventListener('pointerdown', () => ac._focusing = true)
     ac.addEventListener('pointerup', () => delete ac._focusing)
-    ac.addEventListener('click', function (e) {
-      this._choose(e.target.closest('li'))
+    ac.addEventListener('click', function (e) { this._choose(e.target.closest('li')) })
+    ac.addEventListener('contextmenu', e => {
+      const word = e.target.closest('li').innerText
+      const delCus = ac._wordSet.custom.indexOf(word)
+      if (~delCus) {
+        const _msg = `${translate('Removed the self-making word: ')}<code>${ac._wordSet.custom[delCus]}</code>`
+        delete ac._wordSet.custom[delCus]
+        ac._wordSet.custom = ac._wordSet.custom.flat()
+        try { msg(_msg) } catch (e) { console.log(_msg) }
+      }
+      else if (isViewOverflow(ac)) {
+        const m = msg(`<code>${word}</code>`)._msgDiv.firstElementChild
+        m.scrollLeft = m.scrollWidth
+      }
     })
     ac._choose = target => ac.dispatchEvent(new CustomEvent('choose', { detail: { target } }))
     ac._switch = arrow => {
@@ -5082,18 +5629,24 @@ static
       if (!ac._wordMode.length) return
       focusingWord.wordChanged
       if (!(focusingWord.propWord || focusingWord.trimmedWord) || focusingWord.word.endsWith('\n')) return ac._remove()
-      const focusedWord = focusingWord.trimmedWord || focusingWord.propWord
-      if (ac._wordToBeAC === `${focusingWord.trimmedWord} ${focusingWord.propWord}`) return ac.childElementCount ? updateACPos() : ac._remove()
+      const focusedWord = focusingWord.isDot ? '' : focusingWord.trimmedWord || focusingWord.propWord
+      if (ac._wordToBeAC === `${focusingWord.trimmedWord} ${focusingWord.propWord}`)
+        return ac.childElementCount && !(
+          focusingWord.propWord === '(Array.prototype)' && sel._lastNonBlankCharNode.lastNonBlankChar === ']'
+        )
+          ? updateACPos() : ac._remove()
       ac._wordToBeAC = `${focusingWord.trimmedWord} ${focusingWord.propWord}`
-      ac._wordsMatched = focusingWord.trimmedWord
-        ? sortByLiteralDifference(focusingWord.trimmedWord, ac._wordDict, {
-          matchFirst: focusingWord.trimmedWord.length === 1, wordFreq: ac._wordFreq
-        })
-        : ac._wordDict.sort()
+      ac._wordsMatched = focusingWord.isDot
+        ? getInheritedEnumerableKeys(eval(focusingWord.propWord))
+        : focusingWord.trimmedWord
+          ? sortByLiteralDifference(focusingWord.trimmedWord, ac._wordDict, {
+            matchFirst: focusingWord.trimmedWord.length === 1, wordFreq: ac._wordFreq
+          })
+          : ac._wordDict.sort()
       ac.innerHTML = ''
       if (!ac._wordsMatched.length) return ac._remove()
       ac.append(...genListContent(ac._wordsMatched))
-      if (focusingWord.trimmedWord) {
+      if (focusingWord.trimmedWord && !focusingWord.isDot) {
         const cWords = focusedWord.toLowerCase()
         ac.childNodes.forEach(li => {
           let bWordChars = li.textContent
@@ -5228,8 +5781,8 @@ static
       range.setEnd(focusNodeFallback(), offsetFallback(focusingWord.endOffset))
       const rect = range.getBoundingClientRect()
       let { left, bottom, top, width, height } = rect
-      top += pageYOffset
-      bottom += pageYOffset
+      top += scrollY
+      bottom += scrollY
       wordHighlightBlock.style.left = `${left}px`
       wordHighlightBlock.style.top = `${top}px`
       wordHighlightBlock.style.width = `${width}px`
@@ -5237,16 +5790,17 @@ static
       range.detach()
       ac.style.left = ''
       ac.style.right = ''
-      ac.style.setProperty('--word-left', left)
+      ac.style.setProperty('--word-left', left + (focusingWord.isDot ? width : 0))
       ac.style.setProperty('--word-bottom', bottom)
       ac.style.setProperty('--max-word-len', Math.max(...Array.prototype.map.call(ac.children, v => v.textContent.length)))
-      ac.style.setProperty('min-width', ac.children.length > ac._css__candidates_per_scroll ? 'var(--scroll-width)' : '')
+      ac.style.setProperty('width', ac.children.length > ac._css__candidates_per_scroll ? 'var(--scroll-width)' : '')
       body.append(ac, wordHighlightBlock)
       ac.scrollIntoView({ block: 'nearest' })
       if (ac.getBoundingClientRect().right > body.clientWidth) {
         ac.style.left = 'unset'
         ac.style.right = 0
       }
+      if (isViewOverflow(ac)) ac.style.left = 0
     }
     function offsetFallback(offset) {
       return focusingWord.node && focusingWord.node.isConnected
@@ -5288,7 +5842,7 @@ static
         return !this.wordNotChanged
       },
       clear() {
-        'word trimmedWord propWord node startOffset endOffset caretOffset'.split(' ').forEach(
+        'word trimmedWord propWord isDot node startOffset endOffset caretOffset'.split(' ').forEach(
           key => delete focusingWord[key]
         )
       }
@@ -5298,6 +5852,7 @@ static
       const str = sel.focusNode.data
       let offset = sel.focusOffset - 1
       let word = str[offset]
+      const isDot = word === '.'
       if (boundaryChars.general.includes(word) || '\\' === str[offset - 1]) {
         word = ''
         ++offset
@@ -5320,6 +5875,7 @@ static
       ++offset
       const endOffset = offset, startOffset = endOffset - word.length
       Object.assign(focusingWord, {
+        isDot,
         wordWas: focusingWord.word,
         node: sel.focusNode,
         word, trimmedWord: word.trim(),
@@ -5327,24 +5883,27 @@ static
         endOffset,
         caretOffset: sel.focusOffset
       })
-      offset = startOffset
-      let topProp = startOffset, parentProp = startOffset, substr, parentPropHit
-      while (--offset >= 0) {
-        substr = str.substring(offset, startOffset)
-        if (!parentPropHit) {
-          if (boundaryChars.prop.last.test(substr)) continue
-          if (!boundaryChars.prop.general.test(substr)) break
-          topProp = offset
-          parentProp = offset + 1
-          parentPropHit = true
-          continue
-        }
-        if (boundaryChars.prop.general.test(substr)) topProp = offset
-        else if (!boundaryChars.prop.last.test(str.substring(offset, topProp))) break
-      }
-      focusingWord.propWord = str.substring(topProp, parentProp)
+      focusingWord.propWord = (sel._nextNonBlankSequence.nextNonBlankSeq.match(/^\/\/<(.*)>$/) || [])[1]
       if (!focusingWord.propWord) {
-        if (sel._lastNonBlankNodeOffset.lastNonBlankChar !== ']') {
+        offset = startOffset
+        let topProp = startOffset, parentProp = startOffset, substr, parentPropHit
+        while (--offset >= 0) {
+          substr = str.substring(offset, startOffset)
+          if (!parentPropHit) {
+            if (boundaryChars.prop.last.test(substr)) continue
+            if (!boundaryChars.prop.general.test(substr)) break
+            topProp = offset
+            parentProp = offset + 1
+            parentPropHit = true
+            continue
+          }
+          if (boundaryChars.prop.general.test(substr)) topProp = offset
+          else if (!boundaryChars.prop.last.test(str.substring(offset, topProp))) break
+        }
+        focusingWord.propWord = str.substring(topProp, parentProp)
+      }
+      if (!focusingWord.propWord) {
+        if (sel._lastNonBlankCharNode.lastNonBlankChar !== ']') {
           let _str = str, focusNode = focusingWord.node
           _str = _str.substring(0, endOffset + 2)
           if (focusNode.previousSibling && focusNode.previousSibling.nodeType === Node.TEXT_NODE) {
@@ -5359,8 +5918,19 @@ static
       if (!focusingWord.propWord) {
         let chars, offsetToCaret = 0
         while (chars = sel._getCharsBeforeCaret(++offsetToCaret), chars[0]) {
-          if (!/^]?\s*\.?\s*[A-z]{0,14}$/m.test(chars.join(''))) break
+          if (!/^[\]`]?\s*\.?\s*[A-z]{0,14}$/m.test(chars.join(''))) break
           if (chars[0] === ']') { focusingWord.propWord = '(Array.prototype)'; break }
+          if (chars[0] === '`') { focusingWord.propWord = '(String.prototype)'; break }
+        }
+      }
+      if (!focusingWord.word) {
+        const { lastNonBlankSeq, lastNonBlankSeqOffset: startOffset } = sel._lastNonBlankSequence
+        if (lastNonBlankSeq) {
+          Object.assign(focusingWord, {
+            trimmedWord: lastNonBlankSeq,
+            startOffset,
+            endOffset: startOffset + lastNonBlankSeq.length
+          })
         }
       }
       return focusingWord
@@ -5427,28 +5997,31 @@ static
         compareStr.length * threshold <= refStrArr[i].length &&
         filtered.push(refStrArr[i])
       )
-      const filteredStrAndFiff = {}
+      const filteredStrByDiff = {}
       const near = [], rest = []
       filtered.forEach((str, i) =>
         (
-          (filteredStrAndFiff[str] = litDiff[i] + (wordFreq && wordFreq[str] || 0))
+          (filteredStrByDiff[str]
+            = str.replace(/\s|[)\]}]$/g, '') === compareStr
+              ? 0 : litDiff[i] + (wordFreq && wordFreq[str] || 0)
+          )
             <= Math.max(1, str.length / compareStr.length)
             ? near : rest
         ).push(str)
       )
-      if (filteredStrAndFiff.hasOwnProperty(`${compareStr}()`))
-        filteredStrAndFiff[`${compareStr}()`] = 1e-8
-      near.sort((a, b) => filteredStrAndFiff[a] - filteredStrAndFiff[b])
+      if (filteredStrByDiff.hasOwnProperty(`${compareStr}()`))
+        filteredStrByDiff[`${compareStr}()`] = 1e-8
+      near.sort((a, b) => filteredStrByDiff[a] - filteredStrByDiff[b])
       const firstLetter = firstNon$_CharLower(compareStr)
-      const lift = [], tooDiff = []
+      const lift = [], tooFar = []
       rest.forEach(str =>
         ((isFCE(compareStr, str) || isFirstNon$_CharLowerEqual(firstLetter, str)) &&
           str.length / compareStr.length <= threshold
-          ? lift : tooDiff
+          ? lift : tooFar
         ).push(str)
       )
-      tooDiff.sort((a, b) => a.length - b.length)
-      refStrArr = [...near, ...lift, ...tooDiff]
+      tooFar.sort((a, b) => a.length - b.length)
+      refStrArr = [...new Set([...near, ...lift, ...tooFar])]
       return refStrArr
     }
     function literalDifference(cprStr, refStr) {
@@ -5544,11 +6117,65 @@ static
       return str1.toLowerCase().includes(str2.toLowerCase())
     }
     ;
+    addEventListener('DOMContentLoaded', () => genDictForAutocomplete(
+      'JS-Keywords', `
+null
+true
+false
+delete
+function*
+in
+of
+instanceof
+new
+new.target
+super
+this
+typeof
+void
+yield
+yield*
+async
+await
+then
+break
+class
+const
+continue
+debugger
+empty
+for
+for await ( of ) {\\n}
+for ( in ) {\\n}
+for ( of ) {\\n}
+function
+function*
+if () {\\n} else {\\n}
+if
+else
+import
+import.meta
+let
+return
+switch
+throw
+try {\\n} catch (e) {\\n}
+try
+catch
+while () {\\n}
+while
+do {\\n} while ()
+do
+extends
+static
+`), { once: true })
+      ;
     ;; '/// for users:'
     const shy_setting = new Proxy({
-      imgs: { numPerGroup: undefined, lazyLoad: false, concurrency, delta: 1 },
+      imgs: { numPerGroup: undefined, lazyLoad: false, concurrency: {}, delta: 1 },
       video: true,
-      judgeBlockTime: devMode ? 0.5 : 3.5
+      delay: { query: undefined },
+      judgeBlockTime: devMode ? 4 : 4
     }, {
       set(t, k, v) {
         return typeof v === 'object' && v
@@ -5565,12 +6192,15 @@ static
     Object.defineProperties(window, {
       _cached: { async get() { return (await caches.open(_cacheName)).keys() } },
       _inspectCached: { async value(pathnameOnly = true) { return (await _cached).map(req => pathnameOnly ? new URL(req.url).pathname : req.url) } },
-      _pPerID: { get() { return Math.min(pPerID, shy_setting.imgs.numPerGroup) || pPerID } }
+      _pPerID: { get() { return Math.min(pPerID, shy_setting.imgs.numPerGroup) || pPerID } },
+      _delayForQuery: { get() { return shy_setting.delay.query * 1000 } },
+      ...devMode && { ulk: { get() { backupSettings.userProfile.compliance = { inPriva: true, eighteen: true, country: 'en-IL' }; banR18.click() } } }
     })
+    const devTold = { '!checkRemoteFetch.doneAt': 0 }
     let inCodeMode, _inCodeMode
     let viewList, awesomeList, favList, likeList, dislikeList, lastID
       , qAutofills, qInput, qCaret
-      , pagePos, pageYOffsetOld, stickyOffset
+      , pagePos, scrollYOld, stickyOffset
     let orgName, _promptAboutInstallGM, _gP
     const htmlEl = document.documentElement, body = document.body
     addEventListener('message', e => {
@@ -5596,14 +6226,17 @@ static
     }
     videoPlay.quality.opts = Object.keys(videoPlay.quality.pixels)
     videoPlay.quality.pref = videoPlay.quality.opts[0]
-    const backupSettings = {
+    const initDarkThemeFS = detectSysTheme() === 'dark'
+    const genBackupSettings = () => ({
       lang: { pref: undefined },
       imgs: { delta: undefined },
+      delay: { query: undefined },
       videoPrefQuality: { path: 'videoPlay.quality.pref', value: videoPlay.quality.pref },
-      uiPrefs: { darkThemeTime: Object.assign([], { checked: true }) },
+      uiPrefs: { darkThemeFS: initDarkThemeFS, darkThemeTime: Object.assign([], { checked: !initDarkThemeFS }) },
       codeEditor: { dblCol: undefined },
       userProfile: { compliance: {} }
-    }
+    })
+    let backupSettings = genBackupSettings()
     const getPrefSite = (domainName, ut = 'main') => imgsSiteDNs[domainName][ut]
       , switchSites = ({ sortedSites }) => !switchSites.cooldowning && ([imgsSiteDN] = sortedSites)
       , getImgDN = imgSec => (
@@ -5612,15 +6245,15 @@ static
         imgSec = imgSec && imgSec.site
       )
     onload()
-    const $docId = document.getElementById.bind(document)
-    const qFormPlus = $docId('q-form-plus')
-      , qForm = $docId('q-form')
-      , qBox = $docId('search-box')
-      , qBtn = $docId('btn-search')
+    const qFormPlus = $id('q-form-plus')
+      , qForm = $id('q-form')
+      , qBox = $id('search-box')
+      , qBtn = $id('btn-search')
       , init_qInputFromUrl = () => qInputFromUrl = paramsFromUrl().filter(v => v.match(idReP))
-      , tabGroup = $docId('tab-group')
-      , banR18 = $docId('ban r18')
-      , infiniteScroll = $docId('infinite scroll')
+      , tabGroup = $id('tab-group')
+      , banR18 = $id('ban r18')
+      , banR18Yes = (yes = true) => banR18.querySelector('i-🔘').checked = yes
+      , infiniteScroll = $id('infinite scroll')
       , qSet = new Set()
       , fontSize = parseInt(getComputedStyle(body).fontSize)
       , pageScrollDiff = Math.floor(fontSize * 22 / 3 + 48)
@@ -5641,7 +6274,7 @@ static
         switchSites.cooldowning = false, delay
       )
     }
-    switchSites.ifNecessary = () => switchSites.cooldown() && (imgsSiteDN = nextOf(imgs_LTT.domains, getImgDN(imgSec)))
+    switchSites.ifNecessary = imgSec => switchSites.cooldown() && (imgsSiteDN = nextOf(imgs_LTT.domains, getImgDN(imgSec)))
     nav._initialOffsetHeight = nav.offsetHeight
     htmlEl.style.setProperty('--nav-initial-height', `${nav._initialOffsetHeight}px`)
     nav.show = () => nav.classList.replace('hide', 'show')
@@ -5663,7 +6296,7 @@ static
         || 0} ${'mins'}`,
       fav: () => getLikest('fav'),
       like: () => getLikest('like'),
-      roll: () => (setItem('viewHist_B', { lastID_B: lastID }), lastID = undefined),
+      roll: () => { setItem('viewHist_B', { lastID_B: lastID }); lastID = undefined },
       rollback: async () =>
         ({ lastID_B } = await getItem('viewHist_B') || {}).lastID && loadImgSec(lastID_B),
       expandAll: () => Array.prototype.forEach.call(imgPanel.children, c => c.setAttribute('open', '')),
@@ -5676,20 +6309,20 @@ static
         setTimeout(() => {
           qForm.dispatchEvent(new CustomEvent('submit', { cancelable: true, detail: { eval: '`````` --edit' } }))
           new MutationObserver(function ([m]) {
-            m.addedNodes[0].querySelector('[contenteditable]').innerText = '\n'
-            this.disconnect()
+            try { m.addedNodes[0].querySelector('[contenteditable]').innerText = '\n' }
+            catch (e) { }
+            finally { this.disconnect() }
           }).observe(_console, { childList: true })
         })
       },
       get cmds() {
-        return `<div onclick="sel.type === 'Range' ? selectWholeText('cmd') : toggleDescHide(getNES(event.target))"><span>cmds</span>:<p></p>`
+        return `<div onclick="(_=>{_=sel.anchorNode.parentNode;_.localName==='span'&&_.hasAttribute('cmd')&&($id('search-box').value=\`:\${_.innerText}\`)&&$id('q-form-plus').cssLock.softLock(5000); sel.type==='Range'?selectWholeText('cmd'):toggleDescHide(getNES(event.target))})()"><span>cmds</span>:<p></p>`
           + Object.keys(this).sort()
             .filter(cmd => !Object.getOwnPropertyDescriptor(this, cmd).get)
             .map(cmd => `
-        <span style='cursor:pointer'\
-              onclick='${thisNESC}'>•
+        <span style='cursor:pointer'>•
           <span cmd=${cmd} translate=no\
-                onpointerenter='!isTouchDevice&&${thisNESC}.remove("hide");this.onpointerenter=""'>${cmd}</span>
+                onpointerenter='!isTouchDevice&&${thisNESC}.remove("hide");this.removeAttribute("onpointerenter")'>${cmd}</span>
         </span>
         <span class=hide style='color:beige'>\
           ${this[cmd]._explain ? `(<span>${this[cmd]._explain}</span>)` : ''}\
@@ -5712,7 +6345,7 @@ static
       like: 'View <span>like-list</span>',
       time: 'View <span>the time spent browsing</span>',
       roll: 'Pretend to forget the ID of the last group of images currently loaded',
-      rollback: `<span orig-dom-idx=0><span orig-dom-idx=1>The reverse transform </span><span orig-dom-idx=2>of </span><span orig-dom-idx=3>the <span class='code pointer' onclick="restartAnimation(this.closest('[info]').querySelector('[cmd=roll]'), 'flash')">roll</span> command</span></span>`,
+      rollback: `<span orig-dom-idx=0><span orig-dom-idx=1>The reverse transform </span><span orig-dom-idx=2>of </span><span orig-dom-idx=3>the <span class='code pointer' onclick="flash(this.closest('[info]').querySelector('[cmd=roll]'))">roll</span> command</span></span>`,
       code: 'Code editor'
     }
     Object.entries(sameCmds).forEach(([cmd, sames]) => sames.forEach(same =>
@@ -5734,7 +6367,7 @@ static
         ))
       })
     }
-    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
+    matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
       const theme = htmlEl.dataset.theme = e.matches ? 'dark' : 'light'
       syncThemeToOtherElems()
       darkTheme.querySelector('i-🔘').checked = theme === 'dark'
@@ -5742,17 +6375,31 @@ static
     async function onload() {
       document.head.prepend(Object.assign(document.createElement('title'), { innerText: 'JAVivid' }))
       orgName = `https://github.com/${document.title}`
-      let resignedName = 'https://github.com/JAVivie'
+      let resignedName = 'https://github.com/JAVivif'
       aboutLink.href = `${resignedName}/${document.title}`
-      !_langs.chosen.startsWith('en') && await translate('.')
+      if (!_langs.chosen.startsWith('en')) {
+        await translate('.')
+        if (isFirefoxMobile) {
+          document.addEventListener('DOMContentLoaded', () => setTimeout(() => {
+            shyBtn.innerText === 'Shy' && switchLangOfWholePage('', true)
+          }, CSSRelaxTime))
+        }
+      }
+      setTimeout(() => observerFor_switchLang.observeAll())
       devMode && console.info('devMode:', devMode)
       if (!location.protocol.startsWith('file')) {
         if (!window._isBundled) {
           Object.assign(window, await import('./ID-rules/~trunking.js'))
-          if (!window.isFFPW) {
+          if (!swNotNeeded) {
             import('/sw.js')
             const sw = navigator.serviceWorker
             await new Promise(r => sw.controller ? r() : sw.addEventListener('controllerchange', r))
+          }
+          else {
+            setTimeout(() => {
+              document.title = translate(document.title)
+              switchLang(document.getElementById('setting').shadowRoot.querySelector('dl.visible:nth-child(2) > header:nth-child(1)'), true)
+            })
           }
         }
       }
@@ -5773,28 +6420,30 @@ static
       }
       pagePos = await getItem('pagePos')
       if (pagePos) {
-        ({ pageYOffsetOld, stickyOffset } = pagePos)
-        stickyOffset === true && window.scroll(0, pageYOffsetOld + pageScrollDiff)
+        ({ scrollYOld, stickyOffset } = pagePos)
+        stickyOffset === true && window.scroll(0, scrollYOld + pageScrollDiff)
       }
-      if (pageYOffset > nav._initialOffsetHeight) {
+      if (scrollY > nav._initialOffsetHeight) {
         nav.classList.replace('show', 'hide')
         nav.classListTree.replace('before', 'after', '|', false)
       }
       const menuChecked = Object.entries(JSON.parse(localStorage.getItem('menuChecked') || '{}'))
       menuChecked.forEach(([mode, checked]) => menu.querySelector(`[for='${mode}']`).setAttribute('checked', checked))
       viewList = await getItem('viewHist');
-      ({ awesomeList, favList, likeList, dislikeList, lastID } = viewList || (
-        viewList = {
-          awesomeList: new Set(), favList: new Set(), likeList: new Set(),
-          dislikeList: new Set(), lastID
-        })
+      (
+        { awesomeList, favList, likeList, dislikeList, lastID } =
+        typeof viewList !== 'function' && viewList || (
+          viewList = {
+            awesomeList: new Set(), favList: new Set(), likeList: new Set(),
+            dislikeList: new Set(), lastID
+          }
+        )
       )
       self.awesomeList = awesomeList = new Set(awesomeList)
       self.favList = favList = new Set(favList)
       self.likeList = likeList = new Set(likeList)
-      self.dislikeList = dislikeList = new Set(dislikeList)
-      setLock(inftyScroll)
-      const banR18Yes = () => banR18.querySelector('i-🔘').checked = true
+      self.dislikeList = dislikeList = new Set(dislikeList);
+      [codeMode, inftyScroll, qFormPlus].forEach(el => setLock(el))
       if (!localStorage.getItem('ban r18')) {
         localStorage.setItem('ban r18', 'has been set')
         banR18Yes()
@@ -5807,7 +6456,7 @@ static
           _inCodeMode = inCodeMode = true
           checkCodeClass()
         }
-        if (isFFPW || !Object.keys(backupSettings.userProfile.compliance).length) banR18Yes() && await sleep()
+        if (dbUnavailable || !Object.keys(backupSettings.userProfile.compliance).length) banR18Yes() && await sleep()
         banR18._checkSubs()
         if (menu.querySelector('[for="infinite scroll"]').checked) inftyScroll.able = true
       }, CSSRelaxTime)
@@ -5832,11 +6481,11 @@ static
     `.trim()
         )
         info.querySelectorAll('[url]')[notPermittedHostnameMatch.slice(1).findIndex(Boolean)]
-          .append(translate` 🡄 This is the current match`)
+          .append(translate` ← This is the current match`)
       }
       setTimeout(() => {
         if (window.CORSViaGM) {
-          CORSViaGM.initiated = CORSViaGM.init(window)
+          CORSViaGM.initiated = CORSViaGM.init()
           if (!localStorage.getItem('CORSViaGM-enabled')) {
             localStorage.setItem('CORSViaGM-enabled', Date.now())
             fadeOut(_console.logWithoutCount(translate(CORSViaGM.initiated)))
@@ -5849,33 +6498,36 @@ static
           const promptText = '💡 ProTip: You can load "CORS-via-GM" (a userscript used in Tampermonkey) to enable the powerful CORS feature!'
           installationPrompt.querySelector('[close-btn]').remove()
           installationPrompt._info.id = 'installationPromptInfo'
-          installationPrompt._info.translate = () =>
+          installationPrompt._info._translate = () =>
             installationPrompt._info.innerHTML = translate(promptText)
-              .replace('CORS-via-GM', `<a href=https://greasyfork.org/scripts/427847>$&</a>`)
+              .replace('CORS-via-GM', `<a href=https://greasyfork.org/scripts/465261>$&</a>`)
               .replace('Tampermonkey', `<a href=https://www.tampermonkey.net>$&</a>`)
-          installationPrompt._info.translate()
+          installationPrompt._info._translate()
+          let count = 0
           _promptAboutInstallGM = (cond = true, preamble) => {
             if (typeof cond === 'string') preamble = cond
             if (cond) {
+              if (++count > 2) return
               _console._options.setOnce('translate')
               const tip = _console.logFromTop((preamble ? `<span>${preamble}</span><br-br></br-br>` : '') + '<span translate-merge=@hold>Remember the tips about "<span translate-id=c cors>CORS-via-GM</span>"? This is where it comes in!</span>')
+              if (!tip) return
               tip.dataset.dupId = 'NoCORSViaGM'
               setTimeout(() => {
                 const cors = tip.querySelector('[cors]')
                 cors.classList.add('code', 'button')
                 cors.addEventListener('click', () => isInView(installationPrompt, true)
-                  ? restartAnimation(installationPrompt._info, 'flash')
-                  : (installationPrompt.scrollIntoView(false), whenScrollStop(() => restartAnimation(installationPrompt._info, 'flash')))
+                  ? flash(installationPrompt._info)
+                  : (installationPrompt.scrollIntoView(false), whenScrollStop(() => flash(installationPrompt._info)))
                 )
               })
             }
           }
         }
-      }, CSSRelaxTime * 4)
+      }, CSSRelaxTime * (window._isBundled ? 0.4 : 1))
         ;; '/// for pro-users:'
       setTimeout(async () => { try { eval(await getItem('custom:run-after-loading')) } catch (e) { } })
     }
-    window.onbeforeunload = () => !window.isFFPW && (remDarkTheme(), refreshLocalStorage(), rememberPageState())
+    window.onbeforeunload = () => !dbUnavailable && (remDarkTheme(), refreshLocalStorage(), rememberPageState())
     function remDarkTheme() {
       localStorage.setItem('theme', htmlEl.dataset.theme || '')
     }
@@ -5894,7 +6546,8 @@ static
         clearDB()
         localStorage.clear()
         console.log(translate`🗑️ localStorage ${'cleared'}.`)
-      } else {
+      }
+      else {
         localStorage.setItem('menuChecked', JSON.stringify(Object.fromEntries(
           Reflect.ownKeys(menu.children)
             .filter(v => isNaN(v) && menu.children[v].localName === 'li')
@@ -5902,34 +6555,33 @@ static
         )))
       }
       setItem('pagePos', {
-        pageYOffsetOld: pageYOffset,
+        scrollYOld: scrollY,
         stickyOffset: nav.classList.contains('after')
       })
     }
     function backupSettingsAfter(delay = 100) {
-      clearTimeout(backupSettingsAfter._tID)
-      backupSettingsAfter._tID = setTimeout(set_backupSettings, delay)
+      clearTimeout(backupSettingsAfter._tid)
+      backupSettingsAfter._tid = setTimeout(set_backupSettings, delay)
     }
     function set_backupSettings() {
       return setItem('backupSettings', backupSettings)
     }
-    addEventListener('scroll', navTransition)
-    const timeoutId = {}
-    const lockAndReleaseNav = time => (
-      nav.cssLock = true,
-      timeoutId.cssLock = (
-        clearTimeout(timeoutId.cssLock),
-        setTimeout(() => nav.cssLock = false, time || CSSRelaxTime)
-      )
+    const setupLockAndRelease = (elem, tId_cssLock) => time => (
+      elem.cssLocking = true,
+      clearTimeout(tId_cssLock),
+      tId_cssLock = setTimeout(() => elem.cssLocking = false, Math.max(time || CSSRelaxTime / 5, 200))
     )
+    const [lockAndReleaseNav, lockAndReleaseSb] = [nav, _sidebar].map(setupLockAndRelease)
+    addEventListener('scroll', navTransition)
+    let oldScrollY
     function navTransition() {
-      if (nav.cssLock || _gP && _gP.isShow) {
-        window.oldScrollY = scrollY
+      if (nav.cssLocking || _gP && _gP.isShow) {
+        oldScrollY = scrollY
         return
       }
       lockAndReleaseNav(100)
-      if (scrollY > window.oldScrollY) {
-        if (pageYOffset > nav._initialOffsetHeight && !qForm.classList.contains('focus')) {
+      if (scrollY > oldScrollY) {
+        if (scrollY > nav._initialOffsetHeight && !qForm.classList.contains('focus')) {
           nav.classList.replace('show', 'hide')
           if (nav.classList.contains('before')) {
             nav.classListTree.replace('before', 'after')
@@ -5937,7 +6589,7 @@ static
             setTimeout(() => nav.classList.remove('from-top'))
           }
         }
-        else if (fontSize * 7 < pageYOffset && pageYOffset < nav._initialOffsetHeight
+        else if (fontSize * 7 < scrollY && scrollY < nav._initialOffsetHeight
           && qForm.classList.contains('focus')) {
           nav.classListTree.replace('before', 'after')
           qForm.classListTree.replace('after', 'before')
@@ -5949,7 +6601,7 @@ static
       }
       else {
         const inActiveCode = /code.*editable/.test(document.activeElement.className)
-        if (pageYOffset > nav._initialOffsetHeight) {
+        if (scrollY > nav._initialOffsetHeight) {
           if (nav.classList.contains('before')) {
             nav.classListTree.replace('before', 'after')
           }
@@ -5961,14 +6613,16 @@ static
           }
         }
         if (qForm.className.includes('before focus')
-          || inActiveCode && pageYOffset <= nav._initialOffsetHeight
+          || inActiveCode && scrollY <= nav._initialOffsetHeight
         ) qForm.classListTree.replace('after', 'before')
-        if (pageYOffset < fontSize * 7)
+        if (scrollY < fontSize * 7) {
           nav.classListTree.replace('after', 'before')
-        if (!inActiveCode || pageYOffset <= nav._initialOffsetHeight)
+          qBtn.alignHeightWithBox()
+        }
+        if (!inActiveCode || scrollY <= nav._initialOffsetHeight)
           nav.show()
       }
-      window.oldScrollY = scrollY
+      oldScrollY = scrollY
     }
     addEventListener('click', redirectInNewTab)
     body.addEventListener('click', e => {
@@ -5994,11 +6648,11 @@ static
     const whenFingerUp = e_d => [e_p => (body._finger_done = 1, whenFingerUpMust(e_p) && _sidebar.showOrHide(e_d, e_p)), once]
     const whenFingerLeave = e_d => [e_p => !body._finger_done && whenFingerUpMust(e_p) && _sidebar.showOrHide(e_d, e_p), once]
     const once = { once: true }
-    function calcImgLoading({ updateProBar = true, evtSrc } = {}) {
+    async function calcImgLoading({ updateProBar = true, evtSrc } = {}) {
       if (evtSrc) {
         const { img, imgSec } = evtSrc
         const { _imgsCanceledCount = 0 } = imgSec
-        imgLoading -= _imgsCanceledCount + (img.width > placSize ? 1 : _pPerID - imgSec.querySelectorAll('img:not([data-src])').length)
+        imgLoading -= _imgsCanceledCount + (!await isImgPlac(img) ? 1 : _pPerID - imgSec.querySelectorAll('img:not([data-src])').length)
         imgToLoad -= _imgsCanceledCount + (imgSec.hasAttribute('data-not-found') ? _pPerID : 0)
       }
       if (isNaN(imgLoading) || imgLoading < 0) (console.log('Strangely!', imgLoading), imgLoading = 0)
@@ -6013,15 +6667,28 @@ static
       calcImgLoading()
     }
     customElements.whenDefined('i-🍫').then(() => setInterval(() => {
-      if (!concurrency.current && !'0%100%'.includes(proBar.dataset.progress)
-        || !calcImgLoading({ updateProBar: false })
-        && (imgToLoad
-          || proBar.queue.length
-          && +proBar.queue[proBar.queue.length - 1].num !== 100
-          && !proBar.dataset.inProgress)
-      ) {
-        proBar.queue.length = imgLoading = imgToLoad = 0
-        proBar.set(100)
+      {
+        if (!concurrency.current && !'0%100%'.includes(proBar.dataset.progress)
+          || !calcImgLoading({ updateProBar: false })
+          && (imgToLoad
+            || proBar.queue.length
+            && +proBar.queue[proBar.queue.length - 1].num !== 100
+            && !proBar.dataset.inProgress)
+        ) {
+          proBar.queue.length = imgLoading = imgToLoad = 0
+          proBar.set(100)
+        }
+      }
+      {
+        const { ongoing } = iLoadStat()
+        let hinderedImg
+        if (([hinderedImg] = ongoing) && hinderedImg
+          && (hinderedImg = $id(hinderedImg))
+          && hinderedImg.querySelector('i-ꔹ')
+        ) {
+          loadImgSec.reload(hinderedImg)
+        }
+        throttledFetching_queue.next()
       }
     }, 10000))
     nav.addEventListener('dblclick', e => {
@@ -6043,13 +6710,12 @@ static
       if (height < nav._initialOffsetHeight / 2) height -= fontSize / 6
       globalStyle.set('--nav-visible-height', `${height}px`)
     }, { threshold: [...Array(21).keys()].map(v => v / 20) }).observe(nav)
-    menuKey.addEventListener('click', () => {
+    menuKey.addEventListener('pointerdown', () => {
       menuKey.className === 'before' ? _sidebar.show() : _sidebar.hide()
     })
     _sidebar.addEventListener('focusout', e => {
-      if (setting.classList.contains('show')) return
+      if (nav.cssLocking || _sidebar.cssLocking || setting.classList.contains('show') || _sidebar.tarry) return
       if (_sidebar.contains(e.target)) return _sidebar.focus()
-      if (_sidebar.tarry) return
       _sidebar.hide()
       _sidebar.justHide = e.timeStamp
     })
@@ -6072,24 +6738,22 @@ static
       setTimeout(() => selInDocIng() && sel.collapseToEnd())
     }
     _sidebar.show = () => {
+      lockAndReleaseSb()
       _sidebar.getFocus()
       menuKey.classListTree.replace('before', 'after')
       inftyScroll.lock && inftyScroll.lock()
     }
-    _sidebar._hide = () => {
-      inftyScroll.unlock && inftyScroll.unlock()
-      _sidebar.classList.replace('show', 'hide')
-      setTimeout(() => _sidebar.tarry = false)
-      isTouchDevice && lockAndReleaseNav()
-    }
     _sidebar.hide = () => {
+      lockAndReleaseSb()
       if (window.setting && setting.classList.contains('show')) {
         body.style = ''
         menuKey.classList.remove('force-show')
         setting.classList.remove('show')
         setting.addEventListener('transitionend', () => !setting.classList.contains('show') && _sidebar.removeAttribute('setting-show'), { once: true })
       }
-      _sidebar._hide()
+      inftyScroll.unlock && inftyScroll.unlock()
+      setTimeout(() => _sidebar.tarry = false)
+      _sidebar.classList.replace('show', 'hide')
     }
     _sidebar.sOH_activatable = {
       show: { textarea: false, input: false, 'i-🎞️': false, table: false, tbody: false, tr: false, th: false, td: false, },
@@ -6097,19 +6761,25 @@ static
     }
     _sidebar.checkSOH = (sOH, el) => _sidebar.sOH_activatable[sOH][el.target.localName] !== false
     _sidebar.showOrHide = (e_d, e_p) => {
-      if (sel.type === 'Range'
+      if (
+        _sidebar.cssLocking
+        || codeMode.cssLock && codeMode.cssLock.locking
+        || sel.type === 'Range'
         || typeof setting === 'undefined'
         || setting.classList.contains('show') && !menuKey.contains(e_d.target)
         || e_d.target.hasAttribute('contentEditable')
         || _console.contains(e_d.target) && (
           e_d.target.closest('.monaco-editor') ||
           document.activeElement.contains(e_d.target) ||
-          hasScrollableOverflow(e_d.target) ||
-          hasScrollableOverflow(e_d.target.closest('[info]'))
+          isScrollableOverflow(e_d.target) ||
+          isScrollableOverflow(e_d.target.closest('[info]'))
         )
       ) return
       if (e_d.type.startsWith('touch') && e_d.changedTouches[0])
-        [e_d, e_p].forEach(e_ => e_.x = e_.changedTouches[0].clientX)
+        [e_d, e_p].forEach(e_ => Object.assign(
+          e_, ((x, y) => ({ clientX: x, clientY: y } = e_.changedTouches[0], { x, y }))()
+        ))
+      if (Math.abs(e_d.y - e_p.y) > 2 * fontSize || Math.abs(e_d.y - e_p.y) / Math.abs(e_d.x - e_p.x) > 0.666) return
       if (e_d.x - e_p.x >= 0 && _sidebar.checkSOH('hide', e_d)) {
         if (!_sidebar.contains(e_d.target)) _sidebar.hide()
         else
@@ -6156,44 +6826,58 @@ static
       _inCodeMode = this.querySelector('i-🔘').checked
       checkCodeClass(0)
     })
+    codeMode.addEventListener('contextmenu', function () {
+      msg('[Shortcut key] <kbd>Alt</kbd> + <kbd>C</kbd>', 'codeMode')
+      this.cssLock.softLock(0)
+    })
     banR18.addEventListener('click', e => {
       const { compliance } = backupSettings.userProfile
-      const { private, eighteen, country } = compliance
+      const { inPriva, eighteen, country } = compliance
       const isIllegal = banR18._isIllegalIn(country)
       const len = Object.keys(compliance).length
-      if (len && private && eighteen && !isIllegal) {
+      if (len && inPriva && eighteen && !isIllegal) {
         banR18._btn.removeAttribute('disabled')
         banR18._checkSubs()
+        delete banR18._isRechecking
         return
       }
       e.stopImmediatePropagation()
+      if (banR18._isRechecking) {
+        delete banR18._isRechecking
+        banR18Yes()
+        return
+      }
       const reasonsForRejection = [];
       [
-        [private, 'you are not in a private environment'],
+        [inPriva, 'you are not in a private environment'],
         [eighteen, 'you are under eighteen years old'],
-        [country === undefined ? country : !isIllegal, 'your country’s law prohibits R18']
+        [country === undefined ? country : !isIllegal, 'your local regulations prohibits R18']
       ]
         .forEach(([k, r]) => k !== undefined && !k && reasonsForRejection.push(r))
       if (reasonsForRejection.length) {
-        new tosta('<span>Sorry</span>,' + (reasonsForRejection.length > 1 ? '<br>' : ' ') + '<span>' + reasonsForRejection.join('</span>,<br>and <span>') + '</span>')
+        msg('<span>Sorry</span>,' + (reasonsForRejection.length > 1 ? '<br>' : ' ') + '<span>' + reasonsForRejection.join('</span>,<br>and <span>') + '</span>')
         banR18._btn.setAttribute('disabled', '')
-        banR18.checked = true
+        banR18._checked = true
         return
       }
       if (len < 3) {
         clickOut('userProfile', 'compliance')
         setTimeout(() => {
-          new tosta(len ? 'Please fill in completely' : 'Please fill in to determine whether the R18 mode can be lifted')
+          msg(len ? 'Please fill in completely' : 'Please fill in to determine whether the R18 mode can be lifted')
           if (len) {
-            const compliancePage = setting.shadowRoot.getElementById('compliance')._dl
-            'private, eighteen, country'.split(', ').forEach(key => {
+            const compliancePage = $id(setting, 'compliance')._dl
+            'inPriva, eighteen, country'.split(', ').forEach(key => {
               if (compliance.hasOwnProperty(key)) return
               const el = compliancePage.querySelector(`[key=${key}]`)
               restartAnimation(el, 'outline-blink', { sideClass: 'reset outline' })
               el.addEventListener('change', () => el.classList.remove('outline'), { once: true })
             })
           }
-        }, slimen.cssDelay.animationDuration * 2)
+          menuKey.addEventListener('click', () => {
+            banR18._isRechecking = true
+            banR18.click()
+          }, { once: true })
+        }, SliMen.cssDelay.animationDuration * 2)
       }
     });
     [banR18, infiniteScroll].forEach(el => {
@@ -6221,8 +6905,8 @@ static
     [syncBtnToTheme].forEach(v => modulesReady.then(v))
     modulesReady.then(async () => {
       const prevSettings = await getItem('backupSettings')
-      prevSettings && !window.isFFPW && Object.assign(backupSettings, prevSettings)
-      const setting = new slimen({
+      prevSettings && !dbUnavailable && Object.assign(backupSettings, prevSettings)
+      const setting = new SliMen({
         title: 'Settings',
         isTop: true,
         list: [
@@ -6240,7 +6924,10 @@ static
               if (prevPrefLang && !location.search.includes('lang=')) {
                 console.info(`User lang preferred: ${prevPrefLang}`)
                 _langs.chosen = prevPrefLang
-                if (!isLangEn(prevPrefLang)) switchLangOfWholePage(prevPrefLang, true)
+              }
+              if (!isLangEn(_langs.chosen)) {
+                switchLang(document.head)
+                switchLangOfWholePage(prevPrefLang, true)
               }
               const chosenLangEl = Array.prototype.find.call(
                 listContainer.children,
@@ -6252,19 +6939,21 @@ static
             async listenToDesc(e) {
               const T = e.target
               if (T.localName !== 'dt') return
-              const spin = new spinr(T.clientHeight / 3)
+              const spin = new Spi(T.clientHeight / 3)
               spin.style.left = 'calc(var(--dl-padding-side) + 0.25ch)'
               T.querySelector('i-〽️').classList.add('hide')
               T.insertAdjacentElement('afterbegin', spin)
               const toLang = backupSettings.lang.pref = langAttr(T.dataItem)
+              const tick = chmk => { spin.remove(); (chmk = T.querySelector('i-〽️')) && chmk.classList.remove('hide') }
+              isChromeMobile && setTimeout(tick, CSSRelaxTime)
               await switchLangOfWholePage(toLang)
-              window.installationPromptInfo && window.installationPromptInfo.translate()
+              window.installationPromptInfo && window.installationPromptInfo._translate()
               body.querySelectorAll(`[lang]:not([lang|=${toLang}])`).forEach(el => switchLang(el))
-              spin.remove()
-              T.querySelector('i-〽️').classList.remove('hide')
+              tick()
               backupSettingsAfter()
             },
-            preload: true
+            preload: true,
+            wrapWithSpan: false
           },
           {
             icon: '⌨',
@@ -6272,7 +6961,7 @@ static
             id: 'Code_Editor_Area',
             list: [{
               term: 'Double column',
-              indicator: new sbtn(backupSettings.codeEditor.dblCol, { fuse: false }),
+              indicator: new SBtn(backupSettings.codeEditor.dblCol, { fuse: false }),
               props: { dt: { _bakId: 'dblCol' } },
               list: true,
               init({ dt }) {
@@ -6295,12 +6984,227 @@ static
             preload: true
           },
           {
-            icon: '📱',
-            term: 'For Mobile Devices',
-            offIf: !isTouchDevice,
+            icon: '🎞️',
+            term: 'Display Control',
+            list: [
+              {
+                term: 'Loading of images',
+                list: [
+                  {
+                    term: '<span style=font-style:oblique>Δ</span> <input placeholder=-1 class="two-digits code-font"></input>',
+                    def: 'The increment/decrement value of the serial number when the next one is automatically loaded when scrolling to the bottom',
+                    listener: hearInputNum('imgs.delta')
+                  }
+                ]
+              },
+              {
+                term: 'Video Play',
+                list: [
+                  {
+                    term: `Default Quality
+                  ${isFirefox ? '<div replace-select-arrow>' : ''}
+                  <select id=videoPrefQuality ${isFirefox ? 'replace-select-arrow' : ''}>
+                    ${Object.entries(videoPlay.quality.pixels).map(([ql, px]) => `
+                    <option value=${ql}>${px}p</option>`)}
+                  </select>
+                  ${isFirefox ? '</div>' : ''}
+                `,
+                    def: '(only for the trailer)',
+                    listener: e => {
+                      if (e.target.localName !== 'option') return
+                      backupSettings.videoPrefQuality.value = videoPlay.quality.pref = e.target.value
+                      backupSettingsAfter()
+                    }
+                  }
+                ]
+              },
+              {
+                term: 'other',
+                list: [
+                  {
+                    term: '<span>Seconds to wait before querying</span> <input placeholder=5 class="two-digits code-font"></input>',
+                    def: 'How many seconds after the image is loaded to start getting video information and resources?',
+                    listener: hearInputNum('delay.query')
+                  }
+                ]
+              }
+            ],
+            listFlavor: 'flat',
+            preload: true
+          },
+          {
+            icon: '👁️‍🗨️',
+            term: 'UI',
+            id: 'ui',
+            list: [
+              {
+                term: 'Auto Dark Theme',
+                list: [
+                  {
+                    term: 'follow the system',
+                    id: 'darkFS',
+                    indicator: new SBtn(backupSettings.uiPrefs.darkThemeFS, { fuse: false, for: 'darkFS' }),
+                    listener: [
+                      'check',
+                      function () {
+                        toggleOtherBtn(this, 'dark')
+                        const isChecked = this.indicator.checked
+                        if (isChecked) {
+                          localStorage.removeItem('theme')
+                          switchTheme(detectSysTheme())
+                        }
+                        backupSettings.uiPrefs.darkThemeFS = isChecked
+                        backupSettingsAfter()
+                      }
+                    ]
+                  },
+                  {
+                    term: 'start periodically',
+                    id: 'darkOnTime',
+                    indicator: new SBtn(backupSettings.uiPrefs.darkThemeTime.checked, { fuse: false, for: 'darkOnTime' }),
+                    def: (() => {
+                      let idx = 0
+                      const inp = p => `<input idx=${idx++} placeholder=${String(p).padStart(2, 0)} style='width:2ch'></input>`
+                      return `
+              <span>
+                Start on<span> </span><code>${inp(17)}:${inp(0)}</code><span>,</span>
+                end on<span> </span><code>${inp(7)}:${inp(0)}</code>
+              </span>`
+                    })(),
+                    listener: [
+                      'check',
+                      e => {
+                        const dt = e.currentTarget, isChecked = dt.indicator.checked
+                        toggleOtherBtn(dt, 'dark')
+                        css_collapseOrExpand(dt.dd, {
+                          [`force${isChecked ? 'Expand' : 'Collapse'}`]: true
+                        })
+                        backupSettings.uiPrefs.darkThemeTime.checked = isChecked
+                        isChecked && delete backupSettings.uiPrefs.darkThemeTime.disabled
+                        checkRangeSetDark(dt.dd)
+                      }
+                    ],
+                    listenToDesc: [
+                      ['change',
+                        e => {
+                          let v = e.target.value
+                          if (v !== '') {
+                            let isHour = !(+e.target.getAttribute('idx') % 2)
+                            v = Math.round(v)
+                            v = v > (isHour ? 24 : 60) ? (isHour ? 23 : 59) : v < 0 ? 0 : v
+                            v = e.target.value = String(v).padStart(2, 0)
+                          }
+                          backupSettings.uiPrefs.darkThemeTime[e.target.getAttribute('idx')] = v
+                          delete backupSettings.uiPrefs.darkThemeTime.disabled
+                          checkRangeSetDark(e.target.closest('dd'))
+                        }
+                      ],
+                      ['create',
+                        e => {
+                          const { dt, dd } = e.detail
+                          const dTime = backupSettings.uiPrefs.darkThemeTime
+                          if (!Array.isArray(dTime)) return backupSettings.uiPrefs.darkThemeTime = []
+                          const isChecked = dt.indicator.checked = backupSettings.uiPrefs.darkThemeTime.checked
+                          dd.querySelectorAll('input')
+                            .forEach((input, i) => dTime[i] && (input.value = dTime[i]))
+                          setTimeout(() => checkRangeSetDark(dd))
+                          css_collapseOrExpand(dd, { [`force${isChecked ? 'Expand' : 'Collapse'}`]: true })
+                        }
+                      ]
+                    ],
+                    listFlavor: 'flex'
+                  }]
+              }
+            ],
+            listFlavor: 'flat',
+            preload: true
+          },
+          {
+            icon: '🛡️',
+            term: 'User Profile',
+            id: 'userProfile',
+            list: [
+              {
+                term: 'Compliance Check',
+                id: 'compliance',
+                list: [
+                  {
+                    term: ['Your country or region', await genCountrySelect()],
+                    attrs: 'key=country'
+                  }, {
+                    term: '<label flex>You are over 18 years old<input type=checkbox>',
+                    attrs: 'key=eighteen'
+                  }, {
+                    term: '<label flex>Now in a private place<input type=checkbox>',
+                    attrs: 'key=inPriva'
+                  }
+                ],
+                listenToDesc: [
+                  ['change', ({ target }) => {
+                    let value
+                    switch (target.localName) {
+                      case 'input': value = target.checked; break
+                      case 'select': ({ value } = target.selectedOptions[0]); break
+                    }
+                    backupSettings.userProfile.compliance[target.closest('dt').getAttribute('key')] = value
+                    backupSettingsAfter()
+                  }],
+                  ['generate', ({ detail: { listContainer } }) => {
+                    const val = () => backupSettings.userProfile.compliance[dt.getAttribute('key')]
+                    let dt, T
+                    listContainer.querySelectorAll('dt').forEach(_dt => {
+                      dt = _dt;
+                      [['input[type=checkbox]', 'checked'], ['select', 'value']].find(([s, k]) => {
+                        T = dt.querySelector(s)
+                        if (!T) return
+                        const v = val()
+                        if (v) T[k] = v
+                        return true
+                      })
+                    })
+                  }]
+                ],
+              }
+            ],
+            style: { listContainer: 'no-dividing-line' },
+          },
+          {
+            icon: '🛠',
+            term: 'Other Settings',
+            list: [
+              {
+                term: 'Clear app offline cache <i-🍛 class=shadow>Clear</i-🍛>',
+                def: 'To force an update to a new version that may exist',
+                attrs: 'data-act=clear-offline'
+              },
+              {
+                term: 'Reset app settings <i-🍛 class=shadow>Reset</i-🍛>',
+                attrs: 'data-act=reset'
+              }
+            ],
+            listenToDesc({ target }) {
+              if (target.localName !== 'i-🍛') return
+              switch (target.closest('dt').dataset.act) {
+                case 'clear-offline':
+                  if (window.clearCaches) {
+                    clearCaches()
+                    msg('Caches removed')
+                  } break
+                case 'reset':
+                  backupSettings = genBackupSettings()
+                  backupSettingsAfter()
+              }
+              target.classList.add('disable')
+            },
+            addDividingLine: true
+          },
+          {
+            icon: '🐻',
+            term: 'Useless Legacy Features',
+            offIf: 0 && !isTouchDevice,
             list: [{
               term: '<span><span>Use </span><span>Persistent Storage</span></span>',
-              indicator: new sbtn(
+              indicator: new SBtn(
                 navigator.storage && navigator.storage.persist && navigator.storage.persisted(),
                 { fuse: false }
               ),
@@ -6370,11 +7274,11 @@ static
                     'Warning to Chrome users: After this option is turned on, if you want to turn it off, you will ' +
                     'need to reset the browser (Caveat: It will cause the login status of all other websites to be cleared!!), ' +
                     'are you sure to continue?'
-                  ))) return
+                  ))) return e.preventDefault()
                 }
                 requestPersistentStorage(granted => {
                   dt.indicator.checked = granted
-                  !granted && new tosta('Permission denied' + (
+                  !granted && msg('Permission denied' + (
                     isChrome ? (userRefuse ? '' : ' by the browser') : ''
                   ))
                   if (dt.indicator.checked) {
@@ -6388,175 +7292,39 @@ static
                 })
               }
             }]
-          },
-          {
-            icon: '🎞️',
-            term: 'Display Control',
-            list: [
-              {
-                term: 'Loading of images',
-                list: [
-                  {
-                    term: '<span style=font-style:oblique>Δ</span> <input placeholder=1 class="two-digits code-font"></input>',
-                    def: 'The increment/decrement value of the serial number when the next one is automatically loaded when scrolling to the bottom',
-                    listener: [
-                      ['generate', ({ detail: { dt } }) => {
-                        if (backupSettings.imgs.delta !== undefined)
-                          dt.querySelector('input').value = shy_setting.imgs.delta = backupSettings.imgs.delta
-                      }],
-                      ['change', e => {
-                        const v = +(e.target.value || e.target.getAttribute('placeholder'));
-                        [backupSettings, shy_setting].forEach(_ => _.imgs.delta = v)
-                        backupSettingsAfter()
-                      }]
-                    ]
-                  }
-                ]
-              },
-              {
-                term: 'Video Play',
-                list: [
-                  {
-                    term: `Default Quality
-                  ${isFirefox ? '<div replace-select-arrow>' : ''}
-                  <select id=videoPrefQuality ${isFirefox ? 'replace-select-arrow' : ''}>
-                    ${Object.entries(videoPlay.quality.pixels).map(([ql, px]) => `
-                    <option value=${ql}>${px}p</option>`)}
-                  </select>
-                  ${isFirefox ? '</div>' : ''}
-                `,
-                    listener: e => {
-                      if (e.target.localName !== 'option') return
-                      backupSettings.videoPrefQuality.value = videoPlay.quality.pref = e.target.value
-                      backupSettingsAfter()
-                    }
-                  }
-                ]
-              }
-            ],
-            listFlavor: 'flat',
-            preload: true
-          },
-          {
-            icon: '👁️‍🗨️',
-            term: 'UI',
-            id: 'ui',
-            list: [
-              {
-                term: 'Auto Dark Theme',
-                id: 'Auto_Dark_Theme',
-                indicator: new sbtn(backupSettings.uiPrefs.darkThemeTime.checked, { fuse: false, for: 'Auto_Dark_Theme' }),
-                def: (() => {
-                  let idx = 0
-                  const inp = p => `<input idx=${idx++} placeholder=${String(p).padStart(2, 0)} style='width:2ch'></input>`
-                  return `
-              <span>
-                Start on<span> </span><code>${inp(17)}:${inp(0)}</code><span>,</span>
-                end on<span> </span><code>${inp(7)}:${inp(0)}</code>
-              </span>`
-                })(),
-                listener: [
-                  'check',
-                  e => {
-                    const dt = e.currentTarget
-                    css_collapseOrExpand(dt.dd, {
-                      [`force${dt.indicator.checked ? 'Expand' : 'Collapse'}`]: true
-                    })
-                    const isChecked = dt.indicator.checked
-                    backupSettings.uiPrefs.darkThemeTime.checked = isChecked
-                    isChecked && delete backupSettings.uiPrefs.darkThemeTime.disabled
-                    checkRangeSetDark(dt.dd)
-                  }
-                ],
-                listenToDesc: [
-                  ['change',
-                    e => {
-                      let v = e.target.value
-                      if (v !== '') {
-                        let isHour = !(+e.target.getAttribute('idx') % 2)
-                        v = Math.round(v)
-                        v = v > (isHour ? 24 : 60) ? (isHour ? 23 : 59) : v < 0 ? 0 : v
-                        v = e.target.value = String(v).padStart(2, 0)
-                      }
-                      backupSettings.uiPrefs.darkThemeTime[e.target.getAttribute('idx')] = v
-                      delete backupSettings.uiPrefs.darkThemeTime.disabled
-                      checkRangeSetDark(e.target.closest('dd'))
-                    }
-                  ],
-                  ['create',
-                    e => {
-                      const { dt, dd } = e.detail
-                      const dTime = backupSettings.uiPrefs.darkThemeTime
-                      if (!Array.isArray(dTime)) return backupSettings.uiPrefs.darkThemeTime = []
-                      const isChecked = dt.indicator.checked = backupSettings.uiPrefs.darkThemeTime.checked
-                      dd.querySelectorAll('input')
-                        .forEach((input, i) => dTime[i] && (input.value = dTime[i]))
-                      setTimeout(() => checkRangeSetDark(dd))
-                      css_collapseOrExpand(dd, { [`force${isChecked ? 'Expand' : 'Collapse'}`]: true })
-                    }
-                  ]
-                ],
-                listFlavor: 'flex'
-              }
-            ],
-            preload: true
-          },
-          {
-            icon: '🛡️',
-            term: 'User Profile',
-            id: 'userProfile',
-            list: [
-              {
-                term: 'Compliance Check',
-                id: 'compliance',
-                list: [
-                  {
-                    term: ['Your country or region', await genCountrySelect()],
-                    attrs: 'key=country'
-                  }, {
-                    term: '<label flex>You are over 18 years old<input type=checkbox>',
-                    attrs: 'key=eighteen'
-                  }, {
-                    term: '<label flex>Now in a private place<input type=checkbox>',
-                    attrs: 'key=private'
-                  }
-                ],
-                listenToDesc: [
-                  ['change', ({ target }) => {
-                    let value
-                    switch (target.localName) {
-                      case 'input': value = target.checked; break
-                      case 'select': ({ value } = target.selectedOptions[0]); break
-                    }
-                    backupSettings.userProfile.compliance[target.closest('dt').getAttribute('key')] = value
-                    backupSettingsAfter()
-                  }],
-                  ['generate', ({ detail: { listContainer } }) => {
-                    const val = () => backupSettings.userProfile.compliance[dt.getAttribute('key')]
-                    let dt, T
-                    listContainer.querySelectorAll('dt').forEach(_dt => {
-                      dt = _dt;
-                      [['input[type=checkbox]', 'checked'], ['select', 'value']].find(([s, k]) => {
-                        T = dt.querySelector(s)
-                        if (!T) return
-                        const v = val()
-                        if (v) T[k] = v
-                        return true
-                      })
-                    })
-                  }]
-                ],
-              }
-            ],
-            style: { listContainer: 'no-dividing-line' },
-            addDividingLine: true
           }
         ],
         style: { listContainer: 'no-dividing-line' }
       })
+      function hearInputNum(keysPath) {
+        return [
+          ['generate', ({ detail: { dt } }) => {
+            const input = dt.querySelector('input')
+            const [s, i] = [`shy_setting.${keysPath} = backupSettings.${keysPath}`, `dt.querySelector('input')`]
+            eval(eval(`backupSettings.${keysPath}`) !== undefined ? `${i}.value = ${s}` : `${s} = +${i}.placeholder`)
+            if (input.placeholder === input.value) input.value = ''
+          }],
+          ['change', e => {
+            const v = +(e.target.value || e.target.getAttribute('placeholder'));
+            [backupSettings, shy_setting].forEach(_ => eval(`_.${keysPath} = v`))
+            backupSettingsAfter()
+          }]
+        ]
+      }
+      function toggleOtherBtn(fromElem, idStartStr, toggleCheckTo = false, ignoreOff = true) {
+        if (fromElem.localName !== 'dt' || fromElem.parentNode._eaching || ignoreOff && !fromElem.indicator.checked) return
+        fromElem.parentNode._eaching = true
+        fromElem.parentNode.querySelectorAll(`[id^=${idStartStr}]`).forEach(dt => dt !== fromElem &&
+          dt.dispatchEvent(new CustomEvent('check', {
+            detail: {
+              toggleByOtherBtn: true, checked: dt.indicator.checked = toggleCheckTo
+            }
+          })))
+        delete fromElem.parentNode._eaching
+      }
       function checkRangeSetDark(dd) {
         if (backupSettings.uiPrefs.darkThemeTime.disabled || !dd.dt.indicator.checked) return backupSettingsAfter()
-        console.log(translate('Auto dark theme applied.'))
+        setTimeout(() => console.log(translate(['Timed dark theme ', 'applied', '. ', '(', `${document.documentElement.dataset.theme} theme`, ')'])))
         const rangeSet = [...dd.querySelectorAll('code')].map(v =>
           [...v.querySelectorAll('input')].map(v => v.value || v.placeholder).join(':'))
         if (rangeSet[0] >= rangeSet[1]) rangeSet.overnight = true
@@ -6564,10 +7332,12 @@ static
         backupSettingsAfter()
       }
       setting.id = 'setting'
+      switchLang(setting)
       observerFor_switchLang.addObserve(setting.shadowRoot)
       setting.style.setProperty('--sym-x', 'none')
       gear.addEventListener('click', e => {
         if (e.target !== gear) return
+        _sidebar.show()
         setting.classList.toggle('show')
         _sidebar.setAttribute('setting-show', '')
         globalOverlay.classList.replace('fadein', 'fadeout')
@@ -6577,7 +7347,15 @@ static
             `${globalStyle.get('--nav-initial-height', true) - scrollY}px`
           )
         menuKey.classList.add('force-show')
+        removeEventListener('keydown', keydownClose)
+        addEventListener('keydown', keydownClose)
       })
+      const keydownClose = ({ key }) => {
+        if (!(key === 'Escape' && menuKey.classList.contains('after'))) return
+        _sidebar.hide()
+        setTimeout(() => menuKey.click())
+        removeEventListener('keydown', keydownClose)
+      }
       setting.addEventListener('close', () => _sidebar.hide())
       setting.addEventListener('transitionend', function () {
         this.classList.contains('show') && nav.show()
@@ -6591,16 +7369,16 @@ static
       })
       gear.append(setting)
       setTimeout(syncThemeToOtherElems)
-      slimen.setWrapSpan(ADQTList)
-      slimen.iterEach(
+      SliMen.setwrapWithSpan(ADQTList)
+      SliMen.iterEach(
         ADQTList.find(v => v.id === 'ors').list, item =>
-        slimen.detect.intrPage(item) && (item.style = { listContainer: 'padding-top: unset' })
+        SliMen.detect.intrPage(item) && (item.style = { listContainer: 'padding-top: unset' })
       )
-      slimen.iterEach(
+      SliMen.iterEach(
         ADQTList.find(v => v.id === 'Proxy_Software_Providers').list,
-        slimen.eval.string
+        SliMen.eval.string
       )
-      setTimeout(() => setting.shadowRoot.querySelector('[list-container]').appendLi(...ADQTList))
+      setTimeout(() => setting.shadowRoot.querySelector('[list-container]').appendd(...ADQTList))
     })
     qForm.__keyDelay = Date.now()
     function checkCodeClass(silent = true) {
@@ -6609,14 +7387,15 @@ static
         ? (inCodeMode = true, qBtn.setAttribute('mode', 'code'), qBtn.querySelector('[run]').setAttribute('text-content', translate`Run`), qBox.setAttribute('placeholder', translate(qBox.getAttribute('placeholder-en'))), 'add')
         : (inCodeMode = false, qBtn.setAttribute('mode', 'search'), qBox.removeAttribute('placeholder'), 'remove')
       ]('code')
-      if (!silent && _inCodeMode !== inCodeMode && !window._Toast_inCodeMode) new tosta(removeBlankInHTML(`
+      qBtn.alignHeightWithBox()
+      if (!silent && _inCodeMode !== inCodeMode && !window._Toast_inCodeMode) msg(removeBlankInHTML(`
     <span>
       <span>Please </span>
       <span orig-dom-idx=0>
         <span orig-dom-idx=1 tran-dom-idx=2>
           <span>remove </span>
           <span orig-dom-idx=0>
-            <span orig-dom-idx=1 tran-dom-idx=2><span translate-hide>the </span><b>identifier</b><span translate-plural>s </span></span>
+            <span orig-dom-idx=1 tran-dom-idx=2><span translate-hide>the </span><b style='cursor:pointer;text-decoration:underline' onclick=this.getRootNode().querySelector('[onclick-handler]').scrollIntoView({behavior:'smooth'})>identifier</b><span translate-plural>s </span></span>
             <span orig-dom-idx=2 tran-dom-idx=1>used to mark the code or command </span>
           </span>
         </span>
@@ -6626,13 +7405,13 @@ static
     </span>
     <p><i-🍛 onclick=removeCodeClass.call(this)>Do it for me</i-🍛></p>
     <p style="padding-left:4rem;text-indent:-4rem">
-      ➤ <b>identifier</b>:<br>
+      ➤ <b onclick-handler>identifier</b>:<br>
       <span>A </span>
       <span>pair </span>
       <span translate-hide>of </span>
       <span translate-as=measure-word>three </span>
       <span>backtick<span translate-plural>s </span></span>
-      <span>(</span><code>\`</code><span>)</span>
+      <span>(</span><code>\`\`\` \`\`\`</code><span>)</span>
       <span translate-copula='is'> or </span>
       <span orig-dom-idx=0>
         <span orig-dom-idx=1 tran-dom-idx=2>
@@ -6648,26 +7427,29 @@ static
       if (inCodeMode) _gP && _gP.clear()
     }
     window.removeCodeClass = function () {
-      if (!_inCodeMode) return
+      if (!_inCodeMode) return hintToClickXBtn.call(this)
       qBox.value = qBox.value.replace(/^\s*(```\s*|:)|\s*```\s*$/g, '')
       if (qBox.value.startsWith('$') || qBox.value.endsWith('`')) qBox.value = ` ${qBox.value} `
       codeMode.click()
       if (this) {
         this.textContent = translate(['Done', '!'])
         this.removeAttribute('onclick')
-        setTimeout(() => doItTimes(() =>
-          restartAnimation(this.getRootNode().querySelector('.xBtnWrapper'), 'flash'),
-          2, 2000
-        ), 2000)
+        setTimeout(hintToClickXBtn.bind(this), 2000)
       }
       delete window._Toast_inCodeMode
+      function hintToClickXBtn() {
+        doItTimes(
+          () => flash(this.getRootNode().querySelector('.xBtnWrapper')),
+          2, 2000
+        )
+      }
     }
     qForm.oninput = () => {
       if (qForm._composing) return
       (Date.now() - qForm.__keyDelay > 500) && checkCodeClass()
-      if (window.CORSViaGM) {
-        clearTimeout(qForm._toid)
-        qForm._toid = !inCodeMode && _gP && setTimeout(() => qInputUpdated && _api.googleSearchPredictions(qInput).then(pd => _gP.replaceItems(pd)), 200)
+      if (window.CORSViaGM && CORSViaGM.initiated) {
+        clearTimeout(qForm._tid)
+        qForm._tid = !inCodeMode && _gP && setTimeout(() => qInputUpdated ? _api.googleSearchPredictions(qInput).then(pd => _gP.replaceItems(pd)) : _gP.show(), 200)
       }
       qForm._record()
     }
@@ -6681,7 +7463,20 @@ static
       qCaret = qBox.selectionStart
       setItem('qAutofills', { qInput, qCaret })
     }
-    qForm.addEventListener('keydown', e => (e.ctrlKey || e.key.startsWith('Arrow')) && qBox._redoVals(e.key))
+    qForm._relayKey = e => _gP && _gP.dispatchEvent(new e.constructor(e.type, e))
+    qForm.addEventListener('keydown', e => {
+      switch (true) {
+        default:
+          qForm._relayKey(e)
+          qBox._redoVals(e); break
+        case e.key.startsWith('Arrow'):
+        case e.key === 'Enter':
+          qForm._relayKey(e); break
+        case e.altKey && e.key === 'c':
+          _inCodeMode = !_inCodeMode; checkCodeClass(0); break
+      }
+    })
+    qBox.addEventListener('keydown', () => qBox.style['font-style'] = '', { once: true })
     qBox._prevVals = [qBox.value]
     qBox._prevVals._idx = 0
     qBox._prevVals._record = v => {
@@ -6690,22 +7485,29 @@ static
       if (idx < qBox._prevVals.length - 1) qBox._prevVals.splice(idx)
       qBox._prevVals.push(v)
     }
-    qBox._redoVals = key => {
+    qBox._redoVals = e => {
+      if (!e.ctrlKey) return
+      const { key } = e
       let plus = 0
       switch (key) {
-        case 'z': case 'ArrowUp': plus = -1; break
-        case 'y': case 'ArrowDown': plus = 1; break
+        case 'z': plus = -1; break
+        case 'y': plus = 1; break
         default: return
       }
       plus = qBox._prevVals._idx + plus
       if (plus > qBox._prevVals.length - 1 || plus < 0) return
       qBox.value = qBox._prevVals[qBox._prevVals._idx = plus]
     }
+    qBtn.alignHeightWithBox = function () {
+      this.style.cssText += `height:${qBox.clientHeight + (inCodeMode ? 1 : 0)}px; padding-top:unset; padding-bottom:unset`
+    }
+    const isCmd = val => /^\s*:/.test(val)
     qForm.onsubmit = async e => {
       e.preventDefault()
+      if (_gP && _gP.selected && _gP.selected.text && _gP.selected.text.toLowerCase() !== qBox.value.toLowerCase()) return changeInputWithSelectedIn_gP()
       const val = e.detail && e.detail.eval || qBox.value
-      const putCmd = /^\s*:/.test(val)
-      if (inCodeMode && !putCmd) {
+      const _isCmd = isCmd(val)
+      if (inCodeMode && !_isCmd) {
         if (!qBox.value.trim()) {
           _console.querySelectorAll('[input]>[info]:not([collapsed=true])').forEach(info => info.eval())
           return
@@ -6718,32 +7520,27 @@ static
         !noReturn && _console.log(evaled)
         return
       }
-      if (!putCmd) return window._allHTMLCompLoaded === true && typeof idRe === 'object'
+      if (!_isCmd) return window._allHTMLCompLoaded === true && typeof idRe === 'object'
         ? show()
         : (
-          restartAnimation(
+          flash((_console.querySelector('[id=waiting-modules]') || Object.assign(
             (
-              _console.querySelector('[id=waiting-modules]') || Object.assign(
-                (
-                  _console._options.setOnce('translate'),
-                  _console.log('Please wait for the module loading to complete first!')
-                ),
-                { id: 'waiting-modules' }
-              )
-            ).firstElementChild,
-            'flash'
-          ),
-          setTimeout(() => switchLang($docId('waiting-modules'), undefined, { force: true }), 1500),
+              _console._options.setOnce('translate'),
+              _console.log('Please wait for the module loading to complete first!')
+            ),
+            { id: 'waiting-modules' }
+          )).firstElementChild),
+          setTimeout(() => switchLang($id('waiting-modules'), true), 1500),
           !window._allHTMLCompLoaded && (window._allHTMLCompLoaded =
             new Promise(r => window._allHTMLCompLoaded_subscribe = r).then(() => {
-              let waitingModules = $docId('waiting-modules')
+              let waitingModules = $id('waiting-modules')
               waitingModules && waitingModules.remove()
             })
           )
         )
       else {
         startedBrowsing && refreshLocalStorage()
-        _console._options.setOnce('translate')
+        _console._options.setOnce('translate', 'noReturn')
         const msg = qBox.value
           .replace(/^\s*:+\s*|\..*/g, '')
           .split(/[^\w-]+/)
@@ -6754,7 +7551,10 @@ static
       }
       rememberPageState()
     }
-    qForm.addEventListener('click', () => qBox.focus())
+    qForm.addEventListener('click', () => {
+      qBox.focus()
+      window._allHTMLCompLoaded && qBtn.alignHeightWithBox()
+    })
     qForm.addEventListener('focusin', () => {
       qForm.inFocus = true
       qForm.classListTree.replace('after', 'before', 'focus')
@@ -6764,12 +7564,12 @@ static
     qFormPlus.addEventListener('focusout', e => {
       clearTimeout(qFormPlus._focusoutTimeout)
       qFormPlus._focusoutTimeout = setTimeout(() => {
-        if (sel.type === 'Range') return
-        if (e.detail.refocus || qFormPlus.contains(e.relatedTarget) || _gP.isShow) return qBox.focus()
+        if (qFormPlus.cssLock && qFormPlus.cssLock.locking || sel.type === 'Range') return
+        if (e.detail.refocus || qFormPlus.contains(e.relatedTarget) || _gP && _gP.isShow) return qBox.focus()
         qForm.classListTree.remove('focus')
         lockAndReleaseNav()
         delete nav.dataset.focusOn
-        if (pageYOffset > nav._initialOffsetHeight) nav.classListTree.remove('before').add('after')
+        if (scrollY > nav._initialOffsetHeight) nav.classListTree.remove('before').add('after')
         if (nav.classList.contains('after')) qForm.classListTree.remove('before').add('after')
         qForm.inFocus = false
       }, 100)
@@ -6784,19 +7584,23 @@ static
       }).observe(document.querySelector('[data-icon=find]'), { attributeFilter: ['class'] })
       _gP.addEventListener('click', () => {
         if (sel.type === 'Range') return
-        if (!_gP.clicked.item) {
+        if (!_gP.selected.item) {
           _gP.hide()
           qFormPlus.dispatchEvent(new CustomEvent('focusout', { detail: { refocus: true } }))
           return
         }
-        const idx = _gP.clicked.words.toLowerCase().search(qBox.value.toLowerCase())
-        ~idx ? qBox.value += _gP.clicked.words.substring(idx + qBox.value.length) : qBox.value = _gP.clicked.words
-        qForm._record()
-        qBox._prevVals._record(qBox.value)
+        changeInputWithSelectedIn_gP()
       })
-      qForm.addEventListener('focusin', () => _gP.show())
+      qForm.addEventListener('focusin', _gP.show.bind(_gP))
       body.addEventListener('click', e => !qFormPlus.contains(e.target) && _gP.hide())
     })
+    function changeInputWithSelectedIn_gP() {
+      const idx = _gP.selected.text.toLowerCase().search(qBox.value.toLowerCase())
+      ~idx ? qBox.value += _gP.selected.text.substring(idx + qBox.value.length) : qBox.value = _gP.selected.text
+      qForm._record()
+      qBox._prevVals._record(qBox.value)
+      delete _gP.selected
+    }
     tabGroup.addEventListener('click', e => {
       if (e.target.tagName !== 'LI') return
       const tab = e.target
@@ -6815,13 +7619,19 @@ static
         ))
       imgPanel.className.includes('active') && ['imgPanel', 'shyBtn'].every(
         tab => tabGroup.childrens.get(tab).className.includes('active')
-      ) ? imgPanelMask('add')
+      ) ? (imgPanelMask('add'), window._currVid && (_currVid.muted = true))
         : imgPanelMask('remove')
       lockAndReleaseNav()
     });
     [tabGroup, contentPanel].forEach(v => v.childrens =
       new Map([...v.children].map(c => [c.dataset.targetId || c.id, c]))
     )
+    showBtn._neverClicked = true
+    showBtn.addEventListener('click', function () {
+      clearInterval(this._tid_clickMe)
+      delete this._neverClicked
+      this._msg_clickMe && this._msg_clickMe.scat()
+    })
     function imgPanelMask(op) {
       imgPanel.classList[op]('mask')
       !CSSSupports.hostContext &&
@@ -6857,10 +7667,10 @@ static
     }
     function execEvt(eventTarget, { init = false } = {}) {
       const state = eventTarget._state || (Object.defineProperty(eventTarget, '_state', { value: {} }))
-        , zone = eventTarget.closest('details')
+        , d = eventTarget.closest('details')
         , [summary, imgSec, emotions] =
           'summary, section, [data-emotions]'
-            .split(', ').map(s => zone.querySelector(s))
+            .split(', ').map(s => d.querySelector(s))
         , reactEmotions = new Proxy({}, {
           get(_t, k) {
             return Reflect.get(setReactEmotions, k).bind(emotions)
@@ -6875,7 +7685,7 @@ static
         , indicateNeg = toggleIndicateNeg
         , indicateReloading = toggleIndicateNeg
       const exec = {
-        collapse: () => zone.removeAttribute('open'),
+        collapse: () => d.removeAttribute('open'),
         collapseAll: () => Array.prototype.forEach.call(imgPanel.children, c => c.removeAttribute('open')),
         reload: () => loadImgSec(ID, imgSec, { evt: 'reload' }),
         favorite: () => say('fav', '💗', {
@@ -6910,11 +7720,16 @@ static
           revoke() { indicateReloading() }
         }),
         dislike: () => say('dislike', '👎', {
-          invoke(state) {
-            indicateNeg('<span>(</span><span>Marked as dislike</span><span>)</span>')
-            recalcImgLoading(imgSec)
-            !state._has && reactEmotions.add(reaction, ID)
-            delete state._has
+          invoke(state, igniting) {
+            if (!igniting) {
+              indicateNeg('<span>(</span><span>Marked as dislike</span><span>)</span>')
+              recalcImgLoading(imgSec)
+              !state._has && reactEmotions.add(reaction, ID)
+              delete state._has
+              state.ignite = true
+              state.upgradeText = '🤮'
+              setTimeout(() => state.ignite = false, 500)
+            }
           },
           revoke() {
             reactEmotions.del(reaction, ID)
@@ -6927,12 +7742,12 @@ static
       ['favorite', 'like'].includes(reaction)
         ? refreshLocalStorage()
         : ['pass', 'dislike'].includes(reaction)
-        && imgSec.dataset.neg
-        && zone.tmpHide('[data-clear-on~=neg]');
+        && d._checkUnwillView(imgSec.dataset.neg);
       ['pass', 'dislike', 'collapse', 'collapseAll'].includes(reaction) && (
         inftyScroll.softLock(),
-        setTimeout(() => zone.scrollIntoView({ block: 'nearest' }), ['collapse'].includes(reaction) && 80),
-        concurrency.delete(ID)
+        setTimeout(() => d.scrollIntoView({ block: 'nearest' }), ['collapse'].includes(reaction) && 80),
+        concurrency.delete(ID),
+        checkPool.remove(ID)
       )
       function say(word, contentChange, { invoke, revoke } = {}) {
         if (!state[word] || state.ignite) {
@@ -6963,19 +7778,19 @@ static
       clearTimeout(d._autoReload)
       d._autoReload = setTimeout(() => {
         concurrency.delete(d.ID)
-        d.open && d.querySelector('[data-event-key=reload]').click()
+        d.open && loadImgSec.reload(d)
       }, 1000)
     }, true)
     imgPanel.addEventListener('load', async e => {
-      const T = e.target, imgSec = T.closest('section')
+      const T = e.target
       if (T.localName !== 'img' || !T.parentNode.hasAttribute('img-sec')) return
-      const ID = imgSec.parentNode.ID
+      const imgSec = T.closest('section'), d = imgSec.parentNode, ID = d.ID
       const isLastChild = T === T.parentNode.lastElementChild
-      if (T.width < placSize) {
+      if (await isImgPlac(T)) {
         concurrency.delete(ID)
         while (T.nextSibling) T.nextSibling.remove()
         if (imgSec.querySelector('img')) {
-          imgSec.dataset.loaded = true
+          imgSecLoaded(imgSec, ID)
         }
         T.parentNode.getAttribute('img-sec') === 'sub'
           && T === T.parentNode.firstElementChild
@@ -6998,7 +7813,11 @@ static
             imgSec._foldUp = Object.assign(document.createElement('div'), { className: 'unrevealed' })
             setAttributes(imgSec._foldUp, 'img-sec=sub')
             imgSec._foldUp.append(...Array.prototype.slice.call(imgSec.children, 1))
-            imgSec._foldUp.addEventListener('click', () => imgSec._foldUp.removeAttribute('class'))
+            imgSec._foldUp.addEventListener('click', function () {
+              this._h = this.clientHeight / 2
+              this.addEventListener('dblclick', function () { css_collapseOrExpandSmoothly(this, { collapsedHeight: this._h, collapsedClass: 'unrevealed-' }) })
+              this.removeAttribute('class')
+            }, { once: true })
             imgSec.insertAdjacentElement('beforeend', imgSec._foldUp);
             [
               ['text-content', 'show all (+'],
@@ -7008,6 +7827,14 @@ static
                 k => imgSec._foldUp.setAttribute(k, v)
               )
             )
+            !d._checkUnwillView() && imgSec.classList.contains('tmp-hide') && d.restore()
+            setTimeout(async () => {
+              if (!window.CORSViaGM) return
+              if (d._checkUnwillView(1)) return console.log('Cancel fetching vid_inf.')
+              devMode && console.log('Start fetching vid_inf!')
+              const { url, info, review } = await vii.JAVLibrary.q(ID)
+              info && d.otherInfo.append(html`<a class='flr sml' href=${url}>JAVLibrary ${translate`${'page'} link`}</a>`, info, review)
+            }, _delayForQuery)
           }
         } else {
           imgSec._foldUp = T.parentNode
@@ -7024,18 +7851,28 @@ static
         imgSec.lastElementChild.setAttribute('subsec-img-count', imgSec.loadedCount - 1)
       }
       if (imgSec.loadedCount === _pPerID || isLastChild) {
-        imgSec.dataset.loaded = true
-        imgPool.remove(ID)
+        imgSecLoaded(imgSec, ID)
       }
     }, true)
+    function imgSecLoaded(imgSec, ID) {
+      imgSec.dataset.loaded = true
+      imgPool.remove(ID)
+      const { nextSibling: nextSec } = imgSec.parentNode
+      if (nextSec && nextSec.localName === 'details' && nextSec.querySelector('i-ꔹ')) {
+        const { current, concurrencyLimit } = iLoadStat()
+        if (current < concurrencyLimit) {
+          loadImgSec.reload(nextSec)
+        }
+      }
+    }
     imgPanel.addEventListener('click', e => {
       inftyScroll.softLock()
       const T = e.target
       if (T.dataset.eventKey) return execEvt(T)
       if (T.localName === 'summary') {
-        const detail = T.closest('details')
-        detail.open
-          ? restartAnimation(detail.querySelector('i-ꔹ'))
+        const d = T.closest('details')
+        d.open
+          ? restartAnimation(d.querySelector('i-ꔹ'))
           : !T.nextElementSibling.hasAttribute('data-loaded')
           && !T.nextElementSibling.hasAttribute('data-not-found')
           && T.nextElementSibling.querySelector('[data-src]')
@@ -7044,7 +7881,7 @@ static
     })
     let imgLoading = 0, imgToLoad = 0
     const imgLoadAdd = num => (imgLoading += num, imgToLoad += num)
-      , _inspect_imgLoading = () => ({
+      , iLoadStat = () => ({
         imgLoading, imgToLoad,
         ...(
           ({ current, limit, ongoingSet, totalSet }) =>
@@ -7099,7 +7936,7 @@ static
                 break
               case typeof info === 'string':
                 ID = info
-                imgSec = $docId(ID)
+                imgSec = $id(ID)
                 imgSec = imgSec && imgSec.querySelector('[top-img-sec]')
                 break
               case info.localName === 'section':
@@ -7155,10 +7992,17 @@ static
         this.details.setAttribute('ID', ID)
         this.section = this.details.appendChild(document.createElement('section'))
         this.otherInfo = this.details.appendChild(document.createElement('div'))
-        this.otherInfo.setAttribute('other-info', '')
+        setAttributes(this.otherInfo, 'other-info translate=no')
         Object.assign(this.details, {
           imgSec: this.section,
-          otherInfo: this.otherInfo
+          otherInfo: this.otherInfo,
+          _checkUnwillView(v) {
+            if (v === undefined || typeof v === 'number') {
+              !v && this._unwillView && this.tmpHide('[data-clear-on~=neg]')
+              return this._unwillView
+            }
+            return (this._unwillView = v) && this._checkUnwillView()
+          }
         })
         Object.defineProperties(this.section, {
           clear: {
@@ -7294,7 +8138,6 @@ static
         })
       }
     }
-    const isSNInRange = SN => 0 < SN && SN < 1000
     async function loadImgSec(ID, imgSec, { evt } = {}) {
       if (body.firstElementChild.localName.includes('err')) return
       if (ID instanceof HTMLElement) {
@@ -7303,23 +8146,33 @@ static
         ID = imgSec.previousElementSibling.textContent
       }
       if (!(imgSec instanceof HTMLElement)) {
-        if (!favList && !window.isFFPW) {
+        if (!favList && !dbUnavailable) {
           body.insertAdjacentElement('afterbegin', new errSec('idb-problem'))
           throw Error(translate('Unable to use indexedDB.'))
         }
         imgSec = imgPanel.appendChild(new ImgSec(ID).ok).querySelector('[top-img-sec]')
       }
-      const dP = imgSec.closest('details')
-      dP.setAttribute('open', '')
+      const d = imgSec.closest('details')
+      d.setAttribute('open', '')
+      if (d.querySelector('[data-querying], i-ꔹ')) return
       if (evt === 'reload') {
-        if (imgSec.dataset.nonexistent) return new tosta(imgSec.innerText, undefined, { showXBtn: false })
+        if (d._gettingFullVidSrc) return msg('Already searching for online resources, don\'t rush!')
+        if (imgSec.dataset.nonexistent) return msg(imgSec.innerText, { showXBtn: false })
         imgSec.indicateNegElem.classList.add('tmp-hide')
         if (imgSec.querySelector('img') || imgSec.dataset.notFound) {
-          if (imgSec.dataset.tmpHide) return dP.restore()
-          if (imgSec.dataset.loaded || imgSec.dataset.notFound) return new tosta(imgSec.dataset.notFound ? 'Checked, nothing more' : 'Not needed')
+          if (imgSec.dataset.tmpHide) d.restore()
+          if (imgSec.dataset.loaded || imgSec.dataset.notFound) {
+            if (!imgSec.dataset.notFound && !d._hasFullVidSrced) {
+              d._gettingFullVidSrc = true
+              await getFullVidSrcsAsTable(ID, imgSec)
+              d._hasFullVidSrced = delete d._gettingFullVidSrc
+              return
+            }
+            return msg(imgSec.dataset.notFound ? 'Checked, nothing more' : 'Not needed')
+          }
         }
         recalcImgLoading(imgSec)
-        switchSites.ifNecessary()
+        switchSites.ifNecessary(imgSec)
         imgSec.innerHTML = ''
         imgSec.clear('[data-clear-on~=reload]', false)
         'checked loadingStoppedManually'.split(' ').forEach(k => delete imgSec.dataset[k])
@@ -7332,7 +8185,7 @@ static
       let canLaunch = concurrency.ongoingSet.has(ID) || concurrency.current + 1 <= concurrency.limit
       canLaunch && concurrency.launch(ID)
       imgSec.insertAdjacentHTML('afterend', '<i-ꔹ data-clear-on="neg reload"></i-ꔹ>')
-      if (imgSec.querying || checkPool.waitingSet.has(ID)) return
+      if (checkPool.waitingSet.has(ID)) return
       inftyScroll._locking = inftyScroll.locking
       inftyScroll.locking = true
       imgSec.scrollIntoView()
@@ -7352,33 +8205,37 @@ static
       imgSec.clear('i-ꔹ')
       checkPool.Set.delete(ID)
       delete imgSec._imgUrl
-      if (imgSec.dataset.tmpHide) dP.restore(true)
+      if (imgSec.dataset.tmpHide) d.restore(true)
       cIDs = imgg.filter(v => v.img).map(v => v.cID)
       imgSec._idInfo = { ID, cIDs, ...(({ 'Series Short Name': SSN, 'Serial Number': SN }) => ({ SSN, SN }))(idInfo(ID)) }
       if (!isSNInRange(imgSec._idInfo.SN) && !cIDs.length) {
         imgPool.remove(ID)
-        dP.querySelectorAll('details>:nth-child(n+3):nth-last-child(n+2)').forEach(el => el.remove())
+        remove(d, 'details>:nth-child(n+3):nth-last-child(n+2)')
         imgSec.innerHTML = '<p tc><span>Nonexistent</span> 🙂</p>'
         imgSec.dataset.nonexistent = true
         return
       }
-      if (!dP._underObservation) {
-        openObsr.observe(dP, { attributeFilter: ['open'] })
-        dP._underObservation = true
+      if (!d._underObservation) {
+        openObsr.observe(d, { attributeFilter: ['open'] })
+        d._underObservation = true
       }
       Object.defineProperty(imgSec._idInfo, 'cID', {
         get() { return this.cIDs.length ? this.cIDs[0]['Content ID'] || this.cIDs[0] : '' }
       })
       switch (cIDs.length) {
         case 0:
-          cIDs = (await findIDFromProxy(imgSec)) || []
+          cIDs = (await findIDExistences(imgSec)) || []
           if (!cIDs.length) {
             idNotFound(imgSec)
-            genVideoSrcFromOtherSites(ID, imgSec)
+            getFullVidSrcsAsTable(ID, imgSec)
             imgPool.remove(ID)
             return
           }
           if (cIDs.length > 1) await showChoose(imgSec, cIDs)
+          else {
+            d.querySelector('[data-querying]').remove()
+            imgSec._idInfo.cIDs = cIDs = [cIDs[0]['Content ID']]
+          }
           break
         case 1:
           break
@@ -7404,11 +8261,24 @@ static
       canLaunch = canLaunch || concurrency.current + 1 <= concurrency.limit
       canLaunch
         ? (
+          removeChilds(imgSec, ':not(img)'),
           launchImg(imgSec.firstElementChild, ID),
-          imgSec.parentNode.querySelector('[loading-indicator-text] > [loading]').removeAttribute('hide')
+          imgSec.parentNode.querySelector('[loading-indicator-text] > [loading]').removeAttribute('hide'),
+          showBtn._neverClicked && remindUsersToClick(showBtn, 'You can click the "Show" button to view the resources.')
         )
         : imgPool.add(ID, imgSec)
       return imgSec
+    }
+    loadImgSec.reload = elem => {
+      if (elem.localName !== 'details') elem = elem.closest('details')
+      elem.querySelector('[data-event-key=reload]').click()
+    }
+    function remindUsersToClick(elem, msgStr = '') {
+      clearInterval(elem._tid_clickMe)
+      elem._tid_clickMe = setInterval(() => {
+        elem._msg_clickMe = msg(msgStr, 'remindUsersToClick')
+        setTimeout(() => flash(elem), 2222)
+      }, 7777)
     }
     function launchImg(img, ID) {
       if (!img.isConnected) return
@@ -7430,26 +8300,22 @@ static
                 src: evalStr(imgSrc, { cID })
               }).addEventListener(
                 'load',
-                function loaded() {
-                  {
-                    this.removeEventListener('load', loaded)
-                    res({ cID, img: this.width < placSize ? null : this })
-                    if (checkPool.length) {
-                      const { go, for: ID } = checkPool.shift()
-                      checkPool.waitingSet.delete(ID)
-                      go()
-                    }
+                async function loaded() {
+                  this.removeEventListener('load', loaded)
+                  res({ cID, img: await isImgPlac(this) ? null : this })
+                  if (checkPool.length) {
+                    const { go, for: ID } = checkPool.shift()
+                    checkPool.waitingSet.delete(ID)
+                    go()
                   }
-                  {
-                    const blockedInfo = _console.querySelector('[id=connection-blocked]')
-                    if (blockedInfo) {
-                      const typeText = blockedInfo.querySelector('i-🖨️')
-                      if (_userLangInCJK) {
-                        typeText._charWidth = 2
-                        typeText._speed = 6
-                      }
-                      typeText._start()
+                  const blockedInfo = _console.querySelector('[id=connection-blocked]')
+                  if (blockedInfo) {
+                    const typeText = blockedInfo.querySelector('i-🖨️')
+                    if (_userLangInCJK) {
+                      typeText._charWidth = 2
+                      typeText._speed = 6
                     }
+                    typeText._start()
                   }
                 }
               )
@@ -7458,7 +8324,7 @@ static
               rival: p, log: false,
               fallback: () => {
                 let info = _console.querySelector('[id=connection-blocked]'); info
-                  ? restartAnimation(info.querySelector('[info]'), 'flash')
+                  ? flash(info.querySelector('[info]'))
                   : (
                     _console._options.setOnce('no_extra_close', 'translate'),
                     info = Object.assign(_console.logFromTop(
@@ -7486,12 +8352,11 @@ static
       setting.goHome().then(() => click(
         ..._sidebar.classList.contains('show') ? [] : [menuKey],
         ...setting.classList.contains('show') ? [] : [gear],
-        ...settingItemIDs.map(id => function willClick() { return setting.shadowRoot.getElementById(id) })
+        ...settingItemIDs.map(id => function willClick() { return $id(setting, id) })
       ))
     }
-    async function findIDFromProxy(imgSec) {
+    async function findIDExistences(imgSec) {
       const ID = imgSec.previousSibling.textContent
-      imgSec.querying = true
       imgSec.innerHTML = ''
       imgSec.insertAdjacentHTML('afterend', `
     <p tc data-querying>
@@ -7502,14 +8367,12 @@ static
       return (await tryTwice(async found => {
         found = await resolveID(ID)
         if (found === 'try again') found = await resolveID(ID)
-        delete imgSec.querying
-        imgSec.nextElementSibling.remove()
         return found
       })).founds
     }
     function idNotFound(imgSec) {
       imgSec.setAttribute('data-not-found', true)
-      imgSec.innerHTML = '<p tc>(<span orig-dom-idx=0><span tran-dom-idx=2,1 judge>Not Found</span><span translate-as=prep translate-merge=on tran-dom-idx=1,2 translate-shift translate-add-space="`${kw} `"> on <span translate-as=prep-at>R18.com</span></span></span>)</p>'
+      imgSec.innerHTML = '<p tc>(<span orig-dom-idx=0><span tran-dom-idx=2,1 judge>Not Found</span><span translate-as=prep translate-merge=on tran-dom-idx=1,2 translate-shift translate-add-space="`${kw} `"> on <span translate-as=prep-at>FANZA</span></span></span>)</p>'
       if (testMode) _console.log(
         `(${'Img'}_ID_${'Not_Found'}:) ${ID} → ${imgSec._idInfo.cID}`
       )
@@ -7553,15 +8416,16 @@ static
       imgs_LTT.trace(imgNode.src)
       imgNode.parentNode.getAttribute('img-sec') === ''
         && imgNode === imgNode.parentNode.firstElementChild
-        && shy_setting.video && tryVideoSrc(imgNode.parentNode)
+        && shy_setting.video && !imgNode.closest('details')._triedVideoSrc && getTrailerSrcs(imgNode.parentNode)
     }
     function isAttrTheSame(attr, ...elems) {
       const attrOf = elem => String(elem[attr] || !!(elem.hasAttribute && elem.hasAttribute(attr)))
       return elems.every((elem, i) => !i || attrOf(elem) === attrOf(elems[i - 1]))
     }
     const vIDSrcRecs = new Map()
-    function tryVideoSrc(imgSec, { vidUrls } = {}) {
-      if (imgSec.parentNode.vidSec && imgSec.parentNode.vidSec.querySelector('i-🎞️')) return
+    function getTrailerSrcs(imgSec, { vidUrls } = {}) {
+      if (imgSec.parentNode.vidSec && imgSec.parentNode.vidSec.querySelector('i-🎞️') || imgSec.dataset.neg) return
+      imgSec.parentNode._triedVideoSrc = true
       const { _idInfo } = imgSec
       const { ID } = _idInfo
       const vidSet = new VidSet({ preset: 'attrs' })
@@ -7571,9 +8435,9 @@ static
       const handleNoSrcs = () => {
         vids_LTT.siteRecs[regex.matchDN(currentSrc())].hasNoSrcsForTheseIDs.add(_idInfo.cID)
         gotVidUrls = genVidUrlsForTrial(_idInfo.cID)
-        if (gotVidUrls) return tryVideoSrc(imgSec, { vidUrls: gotVidUrls })
+        if (gotVidUrls) return getTrailerSrcs(imgSec, { vidUrls: gotVidUrls })
         imgSec.parentNode.querySelector('div[container-of=i-🎞️]').remove()
-        genVideoSrcFromOtherSites(ID, imgSec)
+        getFullVidSrcsAsTable(ID, imgSec)
       }
       const e_detail = {}
       const handleSrced = showVidSet.bind(vidSet, imgSec, e_detail)
@@ -7586,7 +8450,7 @@ static
           )
           this.addEventListener('no source', () => {
             vIDSrcRecs.delete(_idInfo.SSN)
-            tryVideoSrc(imgSec)
+            getTrailerSrcs(imgSec)
           })
           this.addEventListener('sourced', handleSrced)
         }
@@ -7603,11 +8467,11 @@ static
           ),
           setTimeout(() => vids_LTT.trace(currentSrc()))
         )
-      devMode && !checkRemoteFetch.doneAt && console.log(
-        `> !checkRemoteFetch.doneAt but vid is outbound: ${vidSet.shadowRoot.querySelector('video').querySelector('source').src}`
-      )
+      devMode && !checkRemoteFetch.doneAt
+        && !devTold['!checkRemoteFetch.doneAt'] && (devTold['!checkRemoteFetch.doneAt'] = 1) &&
+        console.log(`checkRemoteFetch is not finished yet but the video ${vidSet.shadowRoot.querySelector('video').querySelector('source').src.replace(/https:\/\/([^/]*)\/.*\/(.*)/, '($2 from $1)')} have been successfully fetched.`)
     }
-    async function genVideoSrcFromOtherSites(ID, imgSec) {
+    async function getFullVidSrcsAsTable(ID, imgSec) {
       const srcsToInsert = findVidSrcs(ID, { tag: 'td' })
       const table = html`
     <div class=table-wrap dont-touch-sidebar>
@@ -7636,14 +8500,14 @@ static
         Array.prototype.every.call(tr.querySelectorAll('td'), td => !td.innerText)
         && tr.querySelector('td').insertAdjacentHTML('afterend', '<td data-not-found>(<span>Not found</span>)</td>')
       )
-      if (table.querySelector('[via=se]+:not([data-not-found])')) imgSec.querySelector('[judge]').innerText = 'Not included'
-      if (table.querySelector('[src-type=download]+:not([data-not-found])')) (table.querySelector('[src-type=stream]+[data-not-found]') || { remove: _ => _ }).remove()
+      if (table.querySelector('[via=se]+:not([data-not-found])')) (imgSec.querySelector('[judge]') || {}).innerText = 'Not included'
+      if (table.querySelector('[src-type=download]+:not([data-not-found])')) (table.querySelector('[src-type=stream]+[data-not-found]') || {}).innerText = '(See below)'
     }
     function showVidSet(imgSec, e_detail) {
       if (!(this instanceof VidSet) || !imgSec) return
       const { _idInfo, vidSrcs } = imgSec
       const vidSetContainer = imgSec.parentNode.vidSec = imgSec.parentNode.querySelector('[container-of=i-🎞️]')
-      const vid = this.shadowRoot.getElementById('video')
+      const vid = $id(this, 'video')
       vidSetContainer.append(this);
       [...this.attributes].forEach(({ name, value }) => this.setAttribute(name, value))
       vid.querySelectorAll('source').forEach(src => src.remove())
@@ -7659,26 +8523,38 @@ static
       imgPanel.classList.contains('mask') && imgPanelMask('add')
       genVidMenu.call(this, imgSec.closest('details').id)
     }
-    function searchVidSrcs(id, { tag } = {}) {
-      const srcs = []
+    function searchVidSrcs(id, { tag, justBt } = {}) {
+      const srcs = [], invals = []
       outsideSrc.vid.forEach(vSrc => {
-        srcs.push({ elem: genElemFromOutsideVidSrc(vSrc, { id, tag }), types: vSrc.type.split(',') })
+        if (!(typeof vSrc.domain === 'string' && vSrc.domain.includes('.'))) return
+        typeof vSrc.type === 'string'
+          ? srcs.push({ elem: getFullVidSrcsAsElem(vSrc, { id, tag, justBt }), types: vSrc.type.split(','), id })
+          : invals.push(vSrc.domain)
       })
+      invals.length && !devTold.usrAddSrc && (devTold.usrAddSrc = !console.error(translate(['You want to add other website sources, but in the configuration file `./configs/config.js`, ', translateInterp(`the domain '${invals}' is missing a required field "type", e.g.`, /'(.+?)'/, '${domain}'), '\n  ', "type: 'stream'\n     || 'stream,download'\n     || 'stream(fast),download(BT)'"])))
       return srcs
     }
     function insertVidSrcs(srcType, srcs, { dt, listContainer = dt._ownListContainer, noneText = '' }) {
-      const typeTest = RegExp.prototype.test.bind(RegExp(`${srcType}(?!\\(nr)`, 'i'))
+      let [typeTestR, typeTestBT, typeTestBTDedic]
+        = [`${srcType}(?!\\(nr)`, 'download\\(BT\\)', '^bt']
+          .map(type => RegExp.prototype.test.bind(RegExp(type, 'i')))
       return Promise.all(srcs.map(async src => {
         const elem = await src.elem
-        src.types.some(typeTest) && (typeof listContainer === 'function' ? listContainer() : listContainer).append(elem || noneText)
+        if (!elem) return
+        if (!src.types.every(typeTestBTDedic)) $id(src.id)._hasFullVidSrced = true
+        if (src.types.some(typeTestR)) {
+          (typeof listContainer === 'function' ? listContainer() : listContainer).append(
+            (/bt/i.test(srcType) && src.types.some(typeTestBT) ? elem.cloneNode(true) : elem) || noneText
+          )
+        }
         if (dt && listContainer.childElementCount) {
           dt.classList.remove('hide')
           dt.nextElementSibling.classList.remove('hide')
         }
       }))
     }
-    function findVidSrcs(id, { tag } = {}) {
-      const foundVidSrcs = searchVidSrcs(id, { tag })
+    function findVidSrcs(id, { tag, justBt } = {}) {
+      const foundVidSrcs = searchVidSrcs(id, { tag, justBt })
       return srcType => (...args) => insertVidSrcs.bind(null, srcType, foundVidSrcs)(...args)
     }
     let throttledFetching = Promise.resolve()
@@ -7686,43 +8562,52 @@ static
     throttledFetching_queue.next = f => (f = throttledFetching_queue.shift(), f && f.nextFetch())
     throttledFetching_queue.interval = 1
     let lastTimePrompt429
-    async function genElemFromOutsideVidSrc(
-      { site, name: siteName = site.replace(/\..+$/, ''), icon, q } = {},
-      { id, tag = 'dt' } = {},
+    async function getFullVidSrcsAsElem(
+      { domain, name: siteName, icon, q } = {},
+      { id, tag = 'dt', justBt } = {},
       { sEs = [se.gg, se.ddg] } = {},
       { immediateRetry } = {}
     ) {
       if (!window.CORSViaGM) return _promptAboutInstallGM('Unable to search online source because the specified plug-in script is not loaded.')
-      if (typeof site !== 'string') return
-      site = site.toLowerCase()
+      if (typeof domain !== 'string') return
+      const discard = (stage, unwilled) => (unwilled = unwillView(id)) && (
+        console.log(translateInterp(`ID '${id}' also makes you feel {${unwilled}}, so skip the fetching of resources.`, /(?<=').+?(?=')|(?<={).+?(?=})/g, ['${id}', '${uw}'])),
+        !immediateRetry && throttledFetching_queue.next(),
+        true
+      )
+      let discarded
+      if (discarded = discard('entry')) return
       let link, title
       if (typeof q === 'function') link = q(id)
       else {
+        if (justBt) sEs = []
         if (!sEs.length) return throttledFetching_queue.next()
         const se = sEs.shift()
-        link = se.q(id, { site })
+        link = se.q(id, { site: domain })
         if (!immediateRetry) throttledFetching = throttledFetching.then(() => {
           const thatTime = Date.now()
-          return new Promise(nextFetch => {
+          return new Promise(nextFetching => {
             throttledFetching_queue.push({
-              nextFetch: async () => {
-                await sleep(throttledFetching_queue.interval)
-                console.log(`${reqAbout} is now sent (after ${Date.now() - thatTime}ms in the queue)`)
-                nextFetch()
+              async nextFetch() {
+                !throttledFetching_queue.firstTime && await sleep(throttledFetching_queue.interval)
+                discarded = discard('delaying')
+                !discarded && devMode && console.log(`${reqAbout} is now sent (after ${Date.now() - thatTime}ms in the queue)`)
+                nextFetching(discarded)
               }, for: { id, site: siteName }
             })
             const reqAbout = JSON.stringify(throttledFetching_queue.last.for)
           })
         })
-        if (!throttledFetching_queue.bonked) {
-          throttledFetching_queue.bonked = true
+        if (!throttledFetching_queue.banging) {
+          throttledFetching_queue.banging = true
           throttledFetching_queue.firstTime = true
           await sleep(throttledFetching_queue.interval + 0.3)
           throttledFetching_queue.next()
         }
-        else if (!immediateRetry) await throttledFetching
+        else if (!immediateRetry) discarded = await throttledFetching
+        if (discarded) return console.log(`ID ${id} fetching discarded.` + ` (${siteName.replaceAll(' ', '')})`)
         const res = await fetch(link)
-        const tryNextSE = () => genElemFromOutsideVidSrc(...Array.prototype.slice.call(arguments, 0, 2), { sEs }, { immediateRetry: true })
+        const tryNextSE = () => getFullVidSrcsAsElem(...Array.prototype.slice.call(arguments, 0, 2), { sEs }, { immediateRetry: true })
         if (!res.ok) {
           if (res.status === 429) {
             if (!lastTimePrompt429 || Date.now() - lastTimePrompt429 > 60_000) {
@@ -7730,6 +8615,7 @@ static
               _console.logFromTop(`Please <span orig-dom-idx=0><span tran-dom-idx=2,1>click </span><a href=${link} tran-dom-idx=3,2><span translate-pron=link>this </span><span>Google </span><span>search </span>link</a><span tran-dom-idx=1,3> manually</span></span>.`).dataset.dupId = 'lastTimePrompt429'
             }
           }
+          else console.warn(res)
           return tryNextSE()
         }
         const resText = await res.text()
@@ -7742,16 +8628,21 @@ static
       }
       return html`
     <${tag}>
-      <a href="${link.startsWith('http') ? '' : 'https://'}${link}" target=_blank>${icoImg(site, icon)} ${siteName}</a>
+      <a href="${link.startsWith('http') ? '' : 'https://'}${link}" ${!title ? '' : `title='${title.trim().replace(/'/g, '\\$&')}'`}>${icoImg(domain, icon)} ${siteName}</a>
     </${tag}>
   `
     }
+    function unwillView(id) {
+      id = id.toUpperCase()
+      return dislikeList.has(id)
+        ? 'detested' : (id = $id(id)) && id._checkUnwillView(1) && id._hasFullVidSrced && !id._gettingFullVidSrc
+          ? 'passed' : false
+    }
     function genVidMenu(id) {
       if (!(this instanceof VidSet)) return
-      const vid = this.shadowRoot.getElementById('video')
-      const srcsToInsert = findVidSrcs(id)
+      const vid = $id(this, 'video')
       const placeholder = { list: ' ', preload: true, style: { dt: 'hide', dd: 'hide' } }
-      const slidingMenu = new slimen({
+      const sM = new SliMen({
         term: 'src control',
         listFlavor: 'flex',
         list: Object.assign([
@@ -7762,37 +8653,47 @@ static
             func: ({ listContainer }) => {
               listContainer.addEventListener('click', function (e) {
                 if (e.target === this) return
+                const dt = e.target.closest('dt')
                 this._currSelect && this._currSelect.classList.remove('pink')
                 const currentTime = vid.currentTime
                 vid.autoplay = !vid.paused
-                vid.src = e.target.dataItem.src
+                vid.src = dt.dataItem.src
                 vid.currentTime = currentTime
-                e.target.classList.add('pink')
-                this._currSelect = e.target
+                dt.classList.add('pink')
+                this._currSelect = dt
               })
               listContainer.querySelector(`#${vid._presetQuality}`).click()
             }
-          },
+          }
+        ], { attrs: 'list-style=compact' }),
+        style: { header: 'hide' },
+      })
+      sM.style.setProperty('--sym-x', '"\\a0"')
+      $id(this, 'menu').append(sM)
+      setTimeout(() => {
+        const justBt = this.closest('details')._checkUnwillView(1)
+        if (justBt) console.log('Cancel fetching vid_src.')
+        else devMode && console.log('Start fetching vid_src!')
+        const insSrcs = findVidSrcs(id, { justBt }), l = sM.shadowRoot.querySelector('[list-container]')
+        l.appendd(
           {
             term: 'Watch Full Movie',
             ...placeholder,
-            func: srcsToInsert('stream')
+            func: insSrcs('stream')
           },
           {
             term: 'Also Downloadable',
             ...placeholder,
-            func: srcsToInsert('download')
+            func: insSrcs('download')
           },
           {
             term: 'BT Magnet',
             ...placeholder,
-            func: srcsToInsert('bt')
+            func: insSrcs('bt')
           }
-        ], { attrs: 'list-style=compact' }),
-        style: { header: 'hide' }
-      })
-      slidingMenu.style.setProperty('--sym-x', '"\\a0"')
-      this.shadowRoot.getElementById('menu').append(slidingMenu)
+        )
+        switchLang(l, true)
+      }, _delayForQuery)
     }
     async function show(_qInputRaw) {
       const qVal = qBox.value.trim()
@@ -7802,7 +8703,7 @@ static
       qInput = extractIDs(qVal)
       qInputNew = arrayMoreThan(qInput, qInputOld)
       if (!qInput.length) {
-        qInput.rawOld !== qVal && search(qVal)
+        qInput.rawOld !== qVal && !isCmd(qVal) && search(qVal)
         qInput.rawOld = qVal
         return
       }
@@ -7817,35 +8718,79 @@ static
         if (qSet.has(ID)) return
         qSet.add(ID)
         loadImgSec(ID)
+        if (!lastID) lastID = ID
       })
       goToLoadImgSec(qInputNew)
     }
-    async function search(str) {
+    async function search(str, { _misspell, _remiss } = {}) {
       if (!(str && typeof str === 'string' && str.trim())) return
       _gP.hide()
-      const resultPanel = searchPanel.appendChild(Object.assign(document.createElement('div'), { className: 'search-result' }))
-      resultPanel.insertAdjacentHTML('afterbegin', `<p translate-merge=@hold>Search results for "<span translate-hold translate=no></span>":</p>`)
-      const searchHeading = resultPanel.querySelector('[translate-hold]')
-      searchHeading.innerText = str
-      searchHeading.scrollIntoView()
-      switchLang(searchHeading)
+      let resultPanel, searchText, resultCountEl, resultCount
+      if (search.hist[str] || _misspell) {
+        if (_misspell) {
+          delete search.hist[_misspell._weird]
+          search.hist[str] = _misspell
+        }
+        ({ resultPanel, searchHeading, searchText, resultCountEl, resultCount } = search.hist[str])
+        if (_misspell) {
+          resultCountEl.classList.add('hide')
+          searchText.innerText = str
+          replaceChildNodes(resultPanel, searchHeading)
+        }
+        else if (!search.hist[str]._netErr) return resultPanel.scrollIntoView()
+      }
+      else {
+        resultPanel = searchPanel.appendChild(Object.assign(document.createElement('div'), { className: 'search-result' }))
+        resultPanel.insertAdjacentHTML('afterbegin', `<p translate-merge=@hold><span>Search results for "<span translate-id=text translate-hold translate=no></span>"</span> <span result-count class=hide>(top <span translate-id=count translate-hold translate=no></span>)</span>:</p>`);
+        [searchHeading, searchText, resultCount] = resultPanel.querySelectorAll('[translate-merge],[translate-hold]')
+        resultCountEl = resultCount.closest('[result-count]')
+        search.hist[str] = { resultPanel, searchHeading, searchText, resultCountEl, resultCount }
+        searchText.innerText = str
+        searchText.scrollIntoView()
+        switchLang(searchText)
+      }
       const bub = resultPanel.insertAdjacentElement('beforeend', new cfBubbles())
       const res = await _api.googleSearch(str).catch(e => {
-        _console.log(e)
+        search.hist[str]._netErr = true
+        _console.log(e).id = 'ggsNetErr'
         _promptAboutInstallGM && _promptAboutInstallGM(!window.CORSViaGM)
       })
       bub.remove()
+      if (_misspell && !_remiss) {
+        searchHeading.insertAdjacentHTML('beforeend', '<span undo style=\'cursor:pointer\'>[Undo]</span>')
+        searchHeading.querySelector('[undo]').addEventListener('click', function () {
+          this.remove()
+          search(_misspell._weird, { _misspell: search.hist[str], _remiss: true })
+        })
+      }
       if (!res) return
+      delete search.hist[str]._netErr
+      removeChilds(_console, '#ggsNetErr')
+      resultCountEl.classList.remove('hide')
+      resultCount.innerText = res.length
+      if (res.otherInfo.taw) {
+        resultPanel.insertAdjacentElement('afterbegin', res.otherInfo.taw)
+        search.hist[str]._weird = str
+        resultPanel.querySelector('#taw').addEventListener('click', ({ target: a }) => {
+          if (a.localName !== 'a') return
+          search(qBox.value = a.innerText, { _misspell: search.hist[str] })
+        })
+      }
       res.forEach(([link, title, excerpt], i) => setTimeout(() => {
         resultPanel.insertAdjacentHTML('beforeend', `
       <div class=search-card>
-        <a link href=${link}>${decodeURI(link).replace(/(?<=\/\/)[^/]+(?=\/)/, `<span domain>$&</span>`).replace(/\/$/, '')}</a>
+        <a link href=${link}>${decodeURI(link)
+            .replace(/(?<=\/\/)[^/]+(?=\/)/, `<span domain>$&</span>`)
+            .replace(/(?<=\/\/)(<span domain>)(www\d*\.)/, '$2$1')
+            .replace(/\/$/, '')}</a>
         <span title>${title}</span>
         <span excerpt>${excerpt}</span>
       </div>
     `)
       }, i * 100))
     }
+    search.hist = {}
+    const isSNInRange = SN => 0 < SN && SN < 1000
     const observe_sentinel = () => {
       const ob = new IntersectionObserver(([inter]) => {
         inftyScroll.able && inter.isIntersecting && lastID && loadImgSec(lastID)
@@ -7858,7 +8803,7 @@ static
             || !imgPanel.className.includes('active')
             || inter.intersectionRatio <= 0
           ) return
-          if (!(lastID && isSNInRange(idInfo(lastID).SN))) return new tosta('The current series is exhausted (the serial number is out of range)', undefined, { id: 'series-exhausted' })
+          if (!(lastID && isSNInRange(idInfo(lastID)['Serial Number']))) return lastID !== undefined && msg('The current series is exhausted (the serial number is out of range)', 'series-exhausted')
           incrLastID()
           imgPanel.childElementCount && lastID === imgPanel.lastElementChild.id && incrLastID()
           qInputOld.push(lastID)

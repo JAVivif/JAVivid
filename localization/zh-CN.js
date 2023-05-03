@@ -25,16 +25,23 @@ window._loadedLangs['zh-CN'] = {
         return '后'
     }
   },
-  // 'age': '年龄',
+  'age': '年龄',
   'airport': '机场',
   'and': '并且',
   'any': '任何',
   'all': '全部',
+  'applied': '已启用',
   'backtick': '反引号',
   'button': '按钮',
   'buttons': '按钮',
   'category': '种类',
   'choose': '选择',
+  'clear': el => {
+    switch (true) {
+      default:
+      case !el.parentNode.localName === 'i-🍛': return '清除'
+    }
+  },
   'cleared': '已清除',
   'click': '点击',
   'clicked': '点击过',
@@ -46,8 +53,9 @@ window._loadedLangs['zh-CN'] = {
   'command': '命令',
   'copied': '已复制',
   'copy': '复制',
-  // 'citizenship': '国籍',
+  'citizenship': '国籍',
   'curated': '策展类的',
+  'dibbling': '点播',
   'dislike': '踩',
   'dismiss': el => {
     switch (true) {
@@ -106,6 +114,7 @@ window._loadedLangs['zh-CN'] = {
   },
   'is': '是',
   'languages': '语言',
+  'light theme': '浅色主题',
   'like': '赞',
   'link': '链接',
   'list': '列表',
@@ -136,6 +145,8 @@ window._loadedLangs['zh-CN'] = {
     }
   },
   'or': el => translateRetainPart('或者', el),
+  'other': '其他',
+  'page': '页面',
   'pair': '对',
   'pass': '略',
   'pass~': '略了',
@@ -150,6 +161,7 @@ window._loadedLangs['zh-CN'] = {
   },
   'reload': '重载',
   'remove': '移除',
+  'reset': '重置',
   'revoke': '撤销',
   'run': '运行',
   's': el => {
@@ -159,8 +171,10 @@ window._loadedLangs['zh-CN'] = {
     }
   },
   'search': '搜索',
+  'see below': '见下',
   'series': '系列',
   'settings': '设置',
+  'shortcut key': '快捷键',
   'show': '秀',
   'shy': '羞',
   'sign': '符号',
@@ -187,8 +201,9 @@ window._loadedLangs['zh-CN'] = {
     }
     return ''
   },
-  'URL': '网址',
+  'url': '网址',
   'use': '使用',
+  'undo': '撤销',
   'view': '查看',
   'welcome': '欢迎',
   'why': '为什么',
@@ -220,23 +235,24 @@ window._loadedLangs['zh-CN'] = {
     '🙉 CORS-via-GM initiated!': '🙉 跨域插件初始化完毕！',
     'The rules have been imported from the': '规则已导入自',
     'local database': '本地数据库', 'local text': '本地文本', 'online text': '在线文本',
-    'last updated at': '上次更新于 ',
+    'is empty, please add some sites.': '是空的，请添加一些网站。',
+    'last updated at': '上次更新于',
     'Fetching the latest exception prefix rules...': '获取最新例外前缀规则中……',
     'No more exception prefix rules.': '并没有更多的例外前缀规则。',
     'Remote Fetch': '远程获取',
-    ' was completed in ${ms} ms': '用时 ${ms} 毫秒',
-    'Search results for "<span>":': ['“', ['<span>'], '”', '的搜索结果：'],
+    'was completed in ${ms} ms': '用时 ${ms} 毫秒',
+    '<span>Search results for "<span#text>"</span> <span>(top <span#count>)</span>:': [['“', ['<span#text>', ''], '”的搜索结果'], '', ['（前', ['<span#count>', ''], '条）'], '：'],
     'Please do not host this page on the following domains:': '请勿将本网页托管于下列域名：',
-    ' 🡄 This is the current match': ' 🡄 这条即当前匹配的',
+    ' ← This is the current match': ' ← 这条即当前匹配的',
     'If you really want free hosting, it is recommended to find other sites as follows:'
       : '若您实在想要免费托管，建议另寻他站如下：',
     '💡 ProTip: You can load "CORS-via-GM" (a userscript used in Tampermonkey) to enable the powerful CORS feature!'
-      : '💡 专业提示：您可以加载“CORS-via-GM”（一个 Tampermonkey 用户脚本）来启用强大的<abbr title=即通过“CORS”>跨域资源检索</abbr>功能！'
+      : '💡 专业提示：您可以加载“CORS-via-GM”（一个 Tampermonkey 用户脚本）来启用强大的<abbr title=即通过“CORS” onpointerdown=\'msg(this.title.replace(/\\w+/,"<a href=https://developer.mozilla.org/zh-CN/docs/Web/HTTP/CORS>$&</a>"))\'>跨域资源检索</abbr>功能！'
   },
 
 
   ...{
-    'Dark Theme': '深色主题',
+    'dark theme': '深色主题',
     'Code Mode': '代码模式',
     'Ban R18': '禁止 R18',
     'Infinite Scroll': '无尽滚动'
@@ -255,7 +271,7 @@ window._loadedLangs['zh-CN'] = {
     'The loading has been cancelled by you.': '加载已被您取消。',
     'An exception ID rule was encountered.': '遇到了一个例外的 ID 规则。',
     'Now querying from the server': '现在向服务器查询',
-    'Unable to send a search request for the exception rule encountered. '
+    'Unable to send a search request for the exception rule encountered.'
       : '无法发送对于所遇例外规则的搜索请求。',
     'Remember the tips about "<span#c>CORS-via-GM</span>"? This is where it comes in!'
       : '还记得有关“<span cors>CORS-via-GM</span>”的提示吗？这就是它的用武之地啦！',
@@ -264,16 +280,23 @@ window._loadedLangs['zh-CN'] = {
     'BT Magnet': '种子磁链',
     'nonexistent': '不存在的',
     'The current series is exhausted (the serial number is out of range)'
-      : '当前系列已尽（序号超出范围了）'
+      : '当前系列已尽（序号超出范围了）',
+    'You can click the "Show" button to view the resources.'
+      : '您可以点击“秀”按钮来阅览资源了',
+    'ID \'${id}\' also makes you feel {${uw}}, so skip the fetching of resources.'
+      : "番号“${id}”也让你觉得${'${uw}'==='detested'?'嫌恶':'跳过'}，因此不飞取在线片源。",
+    'Deduplication of comments': '评论去重结果',
+    'Already searching for online resources, don\'t rush!': '已在搜着在线资源，别催！'
   },
 
 
   ...{
-    'Code Editor Area': '代码编辑器区',
+    'Code Editor Area': '代码编辑区',
     ...{
-      'Double column': '双栏'
+      'Double column': '双栏',
+      '[Button] Clear all corresponding outputs': '【按钮】清除相应的全部输出'
     },
-    'For Mobile Devices': '适用于移动设备',
+    'useless legacy features': '没什么用的遗留特性',
     ...{
       'Persistent Storage': '持久性存储',
       'See why this option exists and how to revoke the selection': '了解此选项的意义以及如何撤销选择',
@@ -301,12 +324,22 @@ window._loadedLangs['zh-CN'] = {
       },
       'Video Play': '视频播放',
       ...{
-        'Default Quality': '默认清晰度'
+        'Default Quality': '默认清晰度',
+        'only for the trailer': '仅指预告片'
+      },
+      // 其他：
+      ...{
+        'Seconds to wait before querying': '查询前等待的秒数',
+        'How many seconds after the image is loaded to start getting video information and resources?'
+          : '图片载完后再过多少秒开始获取影片信息和资源？'
       }
     },
     'UI': '界面',
     ...{
-      'Auto Dark Theme': '自动深色主题',
+      'auto dark theme': '自动深色主题',
+      'follow the system': '跟随系统',
+      'start periodically': '定时启用',
+      ['Timed dark theme'.toLowerCase()]: '定时深色主题',
       'Start on': '始于',
       'end on': '止于'
     },
@@ -319,17 +352,24 @@ window._loadedLangs['zh-CN'] = {
         'You are over 18 years old': '您已年满十八岁',
         'Now in a private place': '现在在私人场所',
         'Please fill in to determine whether the R18 mode can be lifted': '请填选以判断能否解禁 R18 模式',
-        'Please fill in completely': '请完整地填选',
+        'Please fill in completely': '请完整填选',
         'you are not in a private environment': '您不在私人环境中',
         'you are under eighteen years old': '您未满十八岁',
-        'your country’s law prohibits R18': '您国法律禁止 R18'
+        'your local regulations prohibits R18': '您当地法规禁止 R18'
       }
+    },
+    'Other Settings': '其他设置',
+    ...{
+      'Clear app offline cache': '清除应用离线版缓存',
+      'To force an update to a new version that may exist': '以强制更新到或许存在的新版本',
+      'Caches removed': '缓存已清除',
+      'Reset app settings': '重置应用设置'
     },
     'Proxy Software Providers': '代理软件提供商',
     ...{
       '(Pretend there is one here)': '（假装这里有一个）',
       'In fact, the "V2Ray Series" panel is permanently free and open, and you are strongly welcome to recommend or advertise!'
-        : '实际上，“V2Ray 系列”面板永久<b>自由开放</b>，强烈欢迎各路朋友推荐或打广告！',
+        : '实际上，“V2Ray 系列”面板永久<b>自由开放</b>，强烈欢迎各位同仁推荐或打广告！',
       '(<a>Come on~</a>)': ['（', ['<a>', '来嘛~'], '）']
     },
     'Other Recommended Sites': '其他的推荐网站',
@@ -342,7 +382,7 @@ window._loadedLangs['zh-CN'] = {
 
 
   ...{
-    'Type some JS or :cmd': '输入 JS 脚本或者 :cmd',
+    'Type :cmd or some JS': '输入 :cmd 或 JS 脚本',
     'awesomeList': tranWordWithOrig('超爱的列表'),
     'favList': justSynonymOf('favorite-list'),
     'favorite-list': tranWordWithOrig('喜爱的列表'),
@@ -357,6 +397,7 @@ window._loadedLangs['zh-CN'] = {
     'The reverse transform': '逆向转换',
     'Code editor': '代码编辑器',
     ...{
+      'Removed the self-making word': '删除了自造词 ',
       'Do you want to close?': '你要关闭编辑吗？',
       'Execute before close?': '关闭前执行吗？'
     },
@@ -374,12 +415,12 @@ window._loadedLangs['zh-CN'] = {
     'seems to be blocked': '似乎受阻了',
     'maybe you need a proxy software or a better provider': '你也许需要一个代理软件或者一家更优质的提供商',
     'Take One': '来一个',
-    'Unable to search online source because the specified plug-in script is not loaded. '
+    'Unable to search online source because the specified plug-in script is not loaded.'
       : '因没加载指定插件脚本而无法搜索在线片源。'
   },
 
   ...{
-    'used to mark the code or command': '用以标记代码或命令的',
+    'used to mark the code or command': '用于标识代码或命令的',
     'Do it for me': '做给我',
     'at the beginning': '位于开头的',
     'Please wait for the module loading to complete first!': '请先等待模块加载完毕！'
@@ -388,6 +429,14 @@ window._loadedLangs['zh-CN'] = {
 
   ...{
     'Unable to use indexedDB.': '无法使用 indexedDB（数据库）'
+  },
+
+
+  ...{
+    'You want to add other website sources, but in the configuration file `./configs/config.js`,'
+      : '您想要添加其他网站源，可是配置文件 `./configs/config.js` 中，',
+    'the domain \'${domain}\' is missing a required field "type", e.g.'
+      : '域名“${domain}”缺少必需字段“type”，举例：'
   }
 }
 
