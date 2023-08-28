@@ -1976,7 +1976,7 @@
           href = prependToHref`https://google.com${href}`
           const link = extractGoogleSearchResults.checkUrl(href)
           const title = g.querySelector('h3').innerHTML
-          let excerpt = this.extractExcerpt(g, '[data-sncf]')
+          let excerpt = this.extractExcerpt(g, '[data-sncf], .IsZvec')
           excerpt = excerpt.length ? excerpt.map(v => (v.querySelectorAll('a').forEach(prependToHref.bind('https://google.com')), removeAllAttributes(v).innerHTML)).join('<br>') : ''
           return [link, title, excerpt]
         })
@@ -2035,12 +2035,12 @@
               .refed_plus_refs
               .filter(_ =>
                 !_.textContent.startsWith('[url=http') &&
-                (_.innerHTML = _.innerHTML.replaceAll(/\[(url|img)]?.*?\[\/\1](<br>)*/g, (_, $1) => ({ url: '📎', img: '🖼️' })[$1]).replaceAll(/[-=]{3,}(<br>)*/g, '<hr>').replace(/(<br>)+/g, '$1'))
+                (_.innerHTML = _.innerHTML.replaceAll(/\[(url|img)]?.*?\[\/\1](<br>)*/g, (_, $1) => ({ url: `📎${translate([' (', 'URL ', 'removal', ')'])}`, img: '🖼️' })[$1]).replaceAll(/[-=]{3,}(<br>)*/g, '<hr>').replace(/(<br>)+/g, '$1'))
               )
               .map(_ => (_.insertAdjacentHTML('beforeend', `<span class=rev-scores>${_._recvScores}</span>`), _))
           );
           [info, review].forEach(elem => removeAllAttributes(elem, 'class translate', { defaultAllows: true, hrefToPrepend: this.site }))
-          review.addEventListener('dblclick', function () { css_collapseOrExpandSmoothly(this, { collapsedHeight: '64px', collapsedClass: 'unrevealed-' }) })
+          review.addEventListener('dblclick', function (e) { e.stopPropagation(); if (getSelection().isCollapsed || this === e.target) css_collapseOrExpandSmoothly(this, { collapsedHeight: '64px', collapsedClass: 'unrevealed-' }) })
           if (!info && lang === 'zh-CN') this.sites[lang] = this.sites[lang].concat(this.sites[lang].shift())
           return { url, info, review }
         }
@@ -4185,7 +4185,9 @@
       }),
       'img num per ID': 20 + 1,
       'check non-existence of img': function (img) { return window.CORSViaGM ? this.byURL(img.src) : img.width < 100 }.bind({ byURL: async imgURL => +(await getHeaders(imgURL))['content-length'] < 4000 }),
-      pad: (cID, pNum) => cID.replace(/\d+$/, d => d.startsWith('00') ? d : String(+d).padStart(pNum, 0))
+      pad: (cID, pNum) => pNum < 0
+        ? cID.replace(RegExp(`0{0,${-1 * pNum}}(?=\\d{3}(?!\\d))`), '')
+        : cID.replace(/\d+$/, d => d.startsWith('00') ? d : String(+d).padStart(pNum, 0))
     }
     let _pr, _ex
     const gen_ex = ID => _ex = window.exceptPrefixes[SSN(ID)] || []
@@ -4245,7 +4247,7 @@
       `Start to fetch ${IDs.length} IDs, estimated time: ${(IDs.length / 2.7).toFixed(1)} seconds.`),
       Promise.all(IDs.map(resolveID_))
     )
-    const resolving = new Map
+    const resolvingSSNs = new Map
     const serverErrs = [
       ['Internal Server Error', 'error'],
       ['{\n   "Error": "Invalid URI']
@@ -4263,15 +4265,15 @@
         return {}
       }
       let found, fromNetwork
-      if (resolving.has(SSN) && DID) {
-        await resolving.get(SSN).promise
+      if (resolvingSSNs.has(SSN) && DID) {
+        await resolvingSSNs.get(SSN).promise
         if (found = window.exceptPrefixes[SSN] || window['series not included'].includes(SSN)) {
           console.log(`Resolved the ID ‘${DID}’ (Inferred based on what was checked a moment ago)`, pct)
           return {}
         }
       }
       const matchRe = RegExp(
-        `<img src="//pics.dmm.co.jp/mono/movie/adult/(\\w*${SSN}${SN})/\\1pt.jpg" alt="([^"]+)">`, 'gi')
+        `<img src="//pics.dmm.co.jp/mono/movie/adult/(\\w*${SSN}${SN})/\\1p[st].jpg" alt="([^"]+)">`, 'gi')
       let text, proxyURL
       found = window.exceptPrefixes[SSN]
       if (!found) {
@@ -4280,20 +4282,23 @@
           _promptAboutInstallGM('Unable to send a search request for the exception rule encountered.')
           return {}
         }
-        const makeP = () => resolving.get(SSN).promise = new Promise(res => resolving.get(SSN).res = res)
-        if (!resolving.has(SSN)) (resolving.set(SSN, {}), makeP())
+        const makeP = () => resolvingSSNs.get(SSN).promise = new Promise(res => resolvingSSNs.get(SSN).res = res)
+        if (!resolvingSSNs.has(SSN)) (resolvingSSNs.set(SSN, {}), makeP())
         const searchword = DID || SSN
         const url = `https://www.dmm.co.jp/search/=/searchstr=${searchword}`
         if (!len) console.log(`Querying ‘${searchword}’ from network...`)
         found = [...(text = await (await
-          (proxyURL = fetch(url).catch(_ => resolving.delete(SSN)))
+          (proxyURL = fetch(url).catch(_ => resolvingSSNs.delete(SSN)))
         ).text()).matchAll(matchRe)]
       }
-      let err
-      if (text && (err = serverErrs.find(([e]) => text.startsWith(e)))) {
-        resolving.delete(SSN)
-        proxyURL.reportUnusable && proxyURL.reportUnusable(err[1])
-        return 'try again'
+      if (text) {
+        if (text.includes('foreignError')) return 'foreignError'
+        let err
+        if (err = serverErrs.find(([e]) => text.startsWith(e))) {
+          resolvingSSNs.delete(SSN)
+          proxyURL.reportUnusable && proxyURL.reportUnusable(err[1])
+          return 'try again'
+        }
       }
       const prefixes = found.length && [...new Set(found.map(fo => (fromNetwork ? (fo[1].match(RegExp('^(\\w*)' + SSN, 'i')) || [])[1] : fo)))]
       let titles
@@ -4307,9 +4312,9 @@
           const checkSSN = await resolveID(SSN)
           !checkSSN.founds.length && window['series not included'].push(SSN)
         }
-        if (resolving.has(SSN) && DID) {
-          resolving.get(SSN).res()
-          resolving.delete(SSN)
+        if (resolvingSSNs.has(SSN) && DID) {
+          resolvingSSNs.get(SSN).res()
+          resolvingSSNs.delete(SSN)
         }
       }
       found = {
@@ -6193,8 +6198,8 @@ static
       _cached: { async get() { return (await caches.open(_cacheName)).keys() } },
       _inspectCached: { async value(pathnameOnly = true) { return (await _cached).map(req => pathnameOnly ? new URL(req.url).pathname : req.url) } },
       _pPerID: { get() { return Math.min(pPerID, shy_setting.imgs.numPerGroup) || pPerID } },
-      _delayForQuery: { get() { return shy_setting.delay.query * 1000 } },
-      ...devMode && { ulk: { get() { backupSettings.userProfile.compliance = { inPriva: true, eighteen: true, country: 'en-IL' }; banR18.click() } } }
+      _delayForQuery: { get() { return shy_setting.delay.query * 1000 || 0 } },
+      ...devMode && { ulk: { get() { backupSettings.userProfile.compliance = { inPriva: true, eighteen: true, country: 'en-IL' }; banR18.click(); return banR18._checked ? 'Input again!' : 'Unlocked.' } } }
     })
     const devTold = { '!checkRemoteFetch.doneAt': 0 }
     let inCodeMode, _inCodeMode
@@ -6322,7 +6327,8 @@ static
             .map(cmd => `
         <span style='cursor:pointer'>•
           <span cmd=${cmd} translate=no\
-                onpointerenter='!isTouchDevice&&${thisNESC}.remove("hide");this.removeAttribute("onpointerenter")'>${cmd}</span>
+                onpointerenter='!isTouchDevice&&${thisNESC}.remove("hide");this.removeAttribute("onpointerenter")'>${cmd}
+          </span>
         </span>
         <span class=hide style='color:beige'>\
           ${this[cmd]._explain ? `(<span>${this[cmd]._explain}</span>)` : ''}\
@@ -6398,7 +6404,7 @@ static
           else {
             setTimeout(() => {
               document.title = translate(document.title)
-              switchLang(document.getElementById('setting').shadowRoot.querySelector('dl.visible:nth-child(2) > header:nth-child(1)'), true)
+              doItTimes(() => switchLang(document.getElementById('setting')?.shadowRoot.querySelector('dl.visible:nth-child(2) > header:nth-child(1)'), true))
             })
           }
         }
@@ -7787,12 +7793,21 @@ static
       const imgSec = T.closest('section'), d = imgSec.parentNode, ID = d.ID
       const isLastChild = T === T.parentNode.lastElementChild
       if (await isImgPlac(T)) {
+        const isSubImg = T.parentNode.getAttribute('img-sec') === 'sub'
+        if (isSubImg) {
+          imgSec._idInfo.cIDP = padCID(imgSec._idInfo.cID, 5)
+          if (imgSec._idInfo.cIDP !== imgSec._idInfo.cID) {
+            imgSec._idInfo.cIDs[0] = imgSec._idInfo.cIDP
+            loadImg(T)
+            return
+          }
+        }
         concurrency.delete(ID)
         while (T.nextSibling) T.nextSibling.remove()
         if (imgSec.querySelector('img')) {
           imgSecLoaded(imgSec, ID)
         }
-        T.parentNode.getAttribute('img-sec') === 'sub'
+        isSubImg
           && T === T.parentNode.firstElementChild
           && T.parentNode.remove()
         T.remove()
@@ -7829,10 +7844,12 @@ static
             )
             !d._checkUnwillView() && imgSec.classList.contains('tmp-hide') && d.restore()
             setTimeout(async () => {
-              if (!window.CORSViaGM) return
+              if (!window.CORSViaGM || imgSec._fetching_vid_inf) return
               if (d._checkUnwillView(1)) return console.log('Cancel fetching vid_inf.')
               devMode && console.log('Start fetching vid_inf!')
+              imgSec._fetching_vid_inf = true
               const { url, info, review } = await vii.JAVLibrary.q(ID)
+              delete imgSec._fetching_vid_inf
               info && d.otherInfo.append(html`<a class='flr sml' href=${url}>JAVLibrary ${translate`${'page'} link`}</a>`, info, review)
             }, _delayForQuery)
           }
@@ -8032,6 +8049,24 @@ static
               checkPool.remove(ID)
               concurrency.delete(ID)
             }
+          },
+          stopPreflighting: {
+            value(statusElem) {
+              this._isInStopPreflighting = true
+              statusElem.remove()
+              const selector = '[data-querying], i-ꔹ'.split(', ').find(_ => statusElem.matches(_))
+              switch (selector) {
+                case '[data-querying]':
+                  resolvingSSNs.delete(this._idInfo.SSN); break
+                case 'i-ꔹ':
+                  delete imgSec.dataset.checked
+              }
+            }
+          },
+          isInStopPreflighting: {
+            get() {
+              return this._isInStopPreflighting && delete this._isInStopPreflighting
+            }
           }
         })
         Object.defineProperties(this.details, {
@@ -8154,7 +8189,12 @@ static
       }
       const d = imgSec.closest('details')
       d.setAttribute('open', '')
-      if (d.querySelector('[data-querying], i-ꔹ')) return
+      let lastBing = d.querySelector('[data-querying], i-ꔹ')
+      if (lastBing) {
+        imgSec.stopPreflighting(lastBing)
+        loadImgSec(ID, imgSec, { evt })
+        return
+      }
       if (evt === 'reload') {
         if (d._gettingFullVidSrc) return msg('Already searching for online resources, don\'t rush!')
         if (imgSec.dataset.nonexistent) return msg(imgSec.innerText, { showXBtn: false })
@@ -8205,6 +8245,7 @@ static
       imgSec.clear('i-ꔹ')
       checkPool.Set.delete(ID)
       delete imgSec._imgUrl
+      if (imgSec.isInStopPreflighting) return
       if (imgSec.dataset.tmpHide) d.restore(true)
       cIDs = imgg.filter(v => v.img).map(v => v.cID)
       imgSec._idInfo = { ID, cIDs, ...(({ 'Series Short Name': SSN, 'Serial Number': SN }) => ({ SSN, SN }))(idInfo(ID)) }
@@ -8225,8 +8266,10 @@ static
       switch (cIDs.length) {
         case 0:
           cIDs = (await findIDExistences(imgSec)) || []
-          if (!cIDs.length) {
-            idNotFound(imgSec)
+          if (imgSec.isInStopPreflighting) return
+          if (!cIDs.length || cIDs === 'foreignError') {
+            const specErrText = { foreignError: 'Sorry! This content is not available in your region.<br><span sml>(<span>The implication is that it\'s not open to your IP,<br>it can be accessed by changing to a Japanese proxy node</span>)</span>' }[cIDs]
+            idNotFound(imgSec, { specErrText })
             getFullVidSrcsAsTable(ID, imgSec)
             imgPool.remove(ID)
             return
@@ -8244,7 +8287,7 @@ static
       }
       let img
       imgSec.dataset.loadAtTime = proBar.dataset.times || (proBar.dataset.times = '0')
-      genImgUrls(ID, { to: devMode ? 2 : shy_setting.imgs.numPerGroup }).imgUrls.forEach(url => {
+      genImgUrls(ID, { to: devMode ? 2 || 3 : shy_setting.imgs.numPerGroup }).imgUrls.forEach(url => {
         img = imgSec.appendChild(document.createElement('img'))
         img.dataset.src = url
         shy_setting.imgs.lazyLoad && (img.loading = 'lazy')
@@ -8266,7 +8309,7 @@ static
           imgSec.parentNode.querySelector('[loading-indicator-text] > [loading]').removeAttribute('hide'),
           showBtn._neverClicked && remindUsersToClick(showBtn, 'You can click the "Show" button to view the resources.')
         )
-        : imgPool.add(ID, imgSec)
+        : imgPool.add(ID || imgSec)
       return imgSec
     }
     loadImgSec.reload = elem => {
@@ -8358,7 +8401,7 @@ static
     async function findIDExistences(imgSec) {
       const ID = imgSec.previousSibling.textContent
       imgSec.innerHTML = ''
-      imgSec.insertAdjacentHTML('afterend', `
+      imgSec.insertAdjacentHTML('beforeend', `
     <p tc data-querying>
       An exception ID rule was encountered.<br>
       Now querying from the server${typeDots}
@@ -8366,13 +8409,16 @@ static
   `)
       return (await tryTwice(async found => {
         found = await resolveID(ID)
-        if (found === 'try again') found = await resolveID(ID)
+        if (found === 'foreignError') found = { founds: 'foreignError' }
+        else if (found === 'try again') found = await resolveID(ID)
         return found
       })).founds
     }
-    function idNotFound(imgSec) {
+    function idNotFound(imgSec, { specErrText } = {}) {
       imgSec.setAttribute('data-not-found', true)
-      imgSec.innerHTML = '<p tc>(<span orig-dom-idx=0><span tran-dom-idx=2,1 judge>Not Found</span><span translate-as=prep translate-merge=on tran-dom-idx=1,2 translate-shift translate-add-space="`${kw} `"> on <span translate-as=prep-at>FANZA</span></span></span>)</p>'
+      imgSec.innerHTML = typeof specErrText === 'string' && specErrText
+        ? `<p tc>${specErrText}</p>`
+        : '<p tc>(<span orig-dom-idx=0><span tran-dom-idx=2,1 judge>Not Found</span><span translate-as=prep translate-merge=on tran-dom-idx=1,2 translate-shift translate-add-space="`${kw} `"> on <span translate-as=prep-at>FANZA</span></span></span>)</p>'
       if (testMode) _console.log(
         `(${'Img'}_ID_${'Not_Found'}:) ${ID} → ${imgSec._idInfo.cID}`
       )

@@ -161,6 +161,7 @@ window._loadedLangs['zh-CN'] = {
   },
   'reload': '重载',
   'remove': '移除',
+  'removal': '移除',
   'reset': '重置',
   'revoke': '撤销',
   'run': '运行',
@@ -275,6 +276,9 @@ window._loadedLangs['zh-CN'] = {
       : '无法发送对于所遇例外规则的搜索请求。',
     'Remember the tips about "<span#c>CORS-via-GM</span>"? This is where it comes in!'
       : '还记得有关“<span cors>CORS-via-GM</span>”的提示吗？这就是它的用武之地啦！',
+    'Sorry! This content is not available in your region.': '抱歉！此内容在您所在的地区不可用。',
+    'The implication is that it\'s not open to your IP,': '言下之意是不对您的 IP 开放，',
+    'it can be accessed by changing to a Japanese proxy node': '换成日本节点便可访问',
     'Watch Full Movie': '观赏全片',
     'Also Downloadable': '并能下载',
     'BT Magnet': '种子磁链',
