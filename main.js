@@ -1961,7 +1961,7 @@
       return extractGoogleSearchResults.resolveHtmlStr(htmlStr)
     }
     Object.assign(extractGoogleSearchResults, {
-      resultPart: /<div id="taw">[^]+?(?=<div id="bottomads)/,
+      resultPart: /<div (?:class=[^ ]+ )?id="(?:taw|res)"(?: role="main")?>[^]+?(?=<div id="bottomads)/,
       googleLink: { start: /^https:\/\/(www.)?google.com\/url\?/, extract: /(?<=url=).*(?=&usg=)/ },
       resolveHtmlStr(htmlStr = '') {
         let results = (htmlStr.match(this.resultPart) || [])[0]
@@ -1976,19 +1976,21 @@
           href = prependToHref`https://google.com${href}`
           const link = extractGoogleSearchResults.checkUrl(href)
           const title = g.querySelector('h3').innerHTML
-          let excerpt = this.extractExcerpt(g, '[data-sncf], .IsZvec')
+          let excerpt = this.extractExcerpt(g, '[data-sncf], .fzUZNc, .IsZvec', '.fzUZNc')
           excerpt = excerpt.length ? excerpt.map(v => (v.querySelectorAll('a').forEach(prependToHref.bind('https://google.com')), removeAllAttributes(v).innerHTML)).join('<br>') : ''
           return [link, title, excerpt]
         })
         let taw = dom.querySelector('#taw')
-        if (!taw.querySelector('[role]')) taw = ''
-        taw = taw.innerText && removeAllAttributes(taw)
+        if (taw) {
+          if (!taw.querySelector('[role]')) taw = ''
+          taw = taw.innerText && removeAllAttributes(taw)
+        }
         results.otherInfo = { ...taw ? { taw } : {} }
         return results
       },
-      extractExcerpt(g, selector, classLenThan = 2) {
+      extractExcerpt(g, selector, impSelector, classLenThan = 2) {
         const nodeNames = /\b(div|span|text)$/i
-        return Array.prototype.filter.call(g.querySelectorAll(selector), el => el.firstChild && (el.classList.length >= classLenThan ? nodeNames.test(el.firstChild.nodeName) : el.classList.length && el.querySelector('span[style="-webkit-line-clamp:2"]')) && !el.querySelector('svg'))
+        return Array.prototype.filter.call(g.querySelectorAll(selector), el => el.firstChild && (el.classList.length >= classLenThan ? nodeNames.test(el.firstChild.nodeName) : el.classList.length && (el.matches(impSelector) || el.querySelector('span[style="-webkit-line-clamp:2"]'))) && !el.querySelector('svg'))
       },
       checkUrl(href) {
         return this.googleLink.start.test(href) ? decodeURIComponent(href.match(this.googleLink.extract)) : href
@@ -2029,6 +2031,9 @@
             )
           removeChilds(page, '#video_review td.text > :not(:last-child), #video_review td.icon')
           const [info] = 'video_info'.split(' ').map($id.bind(0, page))
+          const vidDate = info.querySelector('#video_date .text')
+          const manyYrs = numOfYearsSince(vidDate.innerText)
+          vidDate.innerText += +manyYrs > 1 ? translate(` (${translateInterp(`${manyYrs} years ago`, /[\d.]+/, '${Y}')})`) : ''
           const review = insertAdjacentElements(
             html`<div id=video_reviews></div>`,
             dedupReviews(preTransformReviewEl(page.querySelectorAll('.review, .comment')))
@@ -3714,6 +3719,9 @@
     function sleep(seconds = 1) {
       return new Promise(r => setTimeout(r, seconds * 1000))
     }
+    function numOfYearsSince(date) {
+      return ((Date.now() - new Date(date)) / (365 * 86400000)).toPrecision(3).replace(/\.0+$/, '')
+    }
     ;
     function fampl(text, convertToOutput) {
       const { keysValsMap, keysValsPairs, texts } = extractText(text)
@@ -4292,7 +4300,10 @@
         ).text()).matchAll(matchRe)]
       }
       if (text) {
-        if (text.includes('foreignError')) return 'foreignError'
+        if (text.includes('foreignError')) {
+          resolvingSSNs.delete(SSN)
+          return 'foreignError'
+        }
         let err
         if (err = serverErrs.find(([e]) => text.startsWith(e))) {
           resolvingSSNs.delete(SSN)
@@ -8059,7 +8070,7 @@ static
                 case '[data-querying]':
                   resolvingSSNs.delete(this._idInfo.SSN); break
                 case 'i-ꔹ':
-                  delete imgSec.dataset.checked
+                  delete this.dataset.checked
               }
             }
           },

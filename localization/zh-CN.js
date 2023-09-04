@@ -279,6 +279,7 @@ window._loadedLangs['zh-CN'] = {
     'Sorry! This content is not available in your region.': '抱歉！此内容在您所在的地区不可用。',
     'The implication is that it\'s not open to your IP,': '言下之意是不对您的 IP 开放，',
     'it can be accessed by changing to a Japanese proxy node': '换成日本节点便可访问',
+    '${Y} years ago': '距今 ${Y} 年',
     'Watch Full Movie': '观赏全片',
     'Also Downloadable': '并能下载',
     'BT Magnet': '种子磁链',
@@ -439,7 +440,7 @@ window._loadedLangs['zh-CN'] = {
   ...{
     'You want to add other website sources, but in the configuration file `./configs/config.js`,'
       : '您想要添加其他网站源，可是配置文件 `./configs/config.js` 中，',
-    'the domain \'${domain}\' is missing a required field "type", e.g.'
+    'the domain \'${domain}\'` is missing a required field "type"`, e.g.'
       : '域名“${domain}”缺少必需字段“type”，举例：'
   }
 }

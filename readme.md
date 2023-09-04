@@ -1,3 +1,6 @@
+JAV Preview
+===========
+
 # README in Other Languages
 [中文]
 
@@ -6,10 +9,7 @@
 ---
 
 # Slogan
-Speedrun exercises and `exercises = JAV`!
-
-### Slogan (the original one)
-Find a [VPN]/[proxy], preview JAVs, and write JS code snippets, all in one go!
+Preview JAVs, write JS code snippets, and find a [VPN]/[proxy], all in one go!
 
 
 # Features
