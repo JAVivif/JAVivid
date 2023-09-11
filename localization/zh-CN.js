@@ -159,6 +159,7 @@ window._loadedLangs['zh-CN'] = {
       case el.getAttribute('translate-about') === 'video': return '清晰度'
     }
   },
+  'query': '查询',
   'reload': '重载',
   'remove': '移除',
   'removal': '移除',
@@ -332,11 +333,14 @@ window._loadedLangs['zh-CN'] = {
         'Default Quality': '默认清晰度',
         'only for the trailer': '仅指预告片'
       },
-      // 其他：
+      // 查询：
       ...{
         'Seconds to wait before querying': '查询前等待的秒数',
         'How many seconds after the image is loaded to start getting video information and resources?'
-          : '图片载完后再过多少秒开始获取影片信息和资源？'
+          : '图片载完后再过多少秒开始获取影片信息和资源？',
+        'Selection of online streaming resource sites': '选取在线流媒体资源站',
+        'Maximum of 5 selections, more than that will be decided in top-to-bottom order only'
+          : '最多选 5 个，超过则只按从上到下的顺序决定'
       }
     },
     'UI': '界面',
@@ -440,7 +444,7 @@ window._loadedLangs['zh-CN'] = {
   ...{
     'You want to add other website sources, but in the configuration file `./configs/config.js`,'
       : '您想要添加其他网站源，可是配置文件 `./configs/config.js` 中，',
-    'the domain \'${domain}\'` is missing a required field "type"`, e.g.'
+    'the domain \'${domain}\' is missing a required field "type", e.g.'
       : '域名“${domain}”缺少必需字段“type”，举例：'
   }
 }

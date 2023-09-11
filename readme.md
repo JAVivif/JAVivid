@@ -85,7 +85,7 @@ Download this repository directly and it is.
   For Android, [Kiwi], [Iceraven] are good choices.
 - What local server applications are there?  
   For Android, [MiXplorer], [kWS], [Termux] are good choices.
-  > Tip: For MiXplorer, the path entered in the browser address bar must contain `index.html`, i.e. `https://192.168.1.9:8181/dir/index.html`.
+  > Tip: For MiXplorer, the path entered in the browser address bar must contain `index.html`, i.e. `https://192.168.1.9:8181/some-dir/index.html`.
 
 [Kiwi]: https://kiwibrowser.com
 [Iceraven]: https://github.com/fork-maintainers/iceraven-browser
